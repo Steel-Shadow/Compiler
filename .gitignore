@@ -3,7 +3,7 @@
 .idea
 .cache
 
-doc
+# doc
 cmake-build-*
 build
 test
