@@ -33,6 +33,7 @@ public:
     static SymTab global;
 
     static std::vector<std::set<std::pair<std::string, int>>> knownVars;
+    static std::vector<Symbol *> staticVars;
 
     explicit SymTab(SymTab *prev);
 
@@ -47,6 +48,10 @@ public:
 
     // no effect if reDefine(ident)
     static void add(const std::string &ident, Symbol &&symbol, SymTab *where = cur);
+
+    static const std::vector<Symbol *> &getStaticVars();
+
+    static void addBuiltins();
 
     // create a new empty SymTab, and set cur to the new one
     static void deepIn();

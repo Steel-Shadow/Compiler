@@ -10,6 +10,7 @@ SymTab SymTab::global{nullptr};
 SymTab *SymTab::cur = &global;
 
 std::vector<std::set<std::pair<std::string, int>>> SymTab::knownVars;
+std::vector<Symbol *> SymTab::staticVars;
 
 bool SymTab::reDefine(const std::string &ident) {
     if (cur->symbols.find(ident) != cur->symbols.end()) {
@@ -52,7 +53,34 @@ int SymTab::findDepth(const std::string &ident) {
 }
 
 void SymTab::add(const std::string &ident, Symbol &&symbol, SymTab *where) {
-    where->symbols.emplace(ident, std::move(symbol));
+    auto [it, inserted] = where->symbols.emplace(ident, std::move(symbol));
+    if (inserted && it->second.statik) {
+        staticVars.push_back(&it->second);
+    }
+}
+
+const std::vector<Symbol *> &SymTab::getStaticVars() {
+    return staticVars;
+}
+
+void SymTab::addBuiltins() {
+    static Symbol intParam(Type::Int, std::vector<int>{});
+    static Symbol charParam(Type::Char, std::vector<int>{});
+    static Symbol charArrayParam(Type::CharPtr, std::vector<int>{0});
+
+    auto addBuiltin = [](const std::string &ident, Type retType, std::vector<Param> params) {
+        if (global.symbols.find(ident) == global.symbols.end()) {
+            SymTab::add(ident, Symbol(retType, params), &global);
+        }
+    };
+
+    addBuiltin("get_int", Type::Int, {});
+    addBuiltin("get_char", Type::Char, {});
+    addBuiltin("get_string", Type::Void, {{"buffer", &charArrayParam}, {"max_len", &intParam}});
+    addBuiltin("put_int", Type::Void, {{"a", &intParam}});
+    addBuiltin("put_char", Type::Void, {{"a", &charParam}});
+    addBuiltin("put_string", Type::Void, {{"str", &charArrayParam}});
+    addBuiltin("put_str", Type::Void, {{"str", &charArrayParam}});
 }
 
 

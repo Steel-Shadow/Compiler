@@ -35,7 +35,8 @@ std::unique_ptr<FuncDef> FuncDef::parse() {
 
     SymTab::add(n->ident, Symbol(n->funcType->getType(), params), SymTab::cur->getPrev());
 
-    Stmt::retVoid = n->funcType->getType() == Type::Void;
+    Stmt::retType = n->funcType->getType();
+    Stmt::retVoid = Stmt::retType == Type::Void;
     n->block = Block::parse();
 
     if (!Stmt::retVoid) {
@@ -64,6 +65,7 @@ std::unique_ptr<MainFuncDef> MainFuncDef::parse() {
     singleLex(LexType::LPARENT);
     singleLex(LexType::RPARENT, row);
 
+    Stmt::retType = Type::Int;
     Stmt::retVoid = false;
     n->block = Block::parse();
 
@@ -100,7 +102,7 @@ std::unique_ptr<IR::Function> MainFuncDef::genIR() const {
 std::unique_ptr<FuncType> FuncType::parse() {
     auto n = std::make_unique<FuncType>();
 
-    if (Lexer::curLexType == LexType::VOIDTK || Lexer::curLexType == LexType::INTTK) {
+    if (Lexer::curLexType == LexType::VOIDTK || Lexer::curLexType == LexType::INTTK || Lexer::curLexType == LexType::CHARTK) {
         n->type = Lexer::curLexType;
         Lexer::next();
     } else {
@@ -169,7 +171,7 @@ std::unique_ptr<FuncFParam> FuncFParam::parse() {
     if (n->dims.empty()) {
         SymTab::add(n->getId(), Symbol(toType(n->type->type), std::vector<int>{}));
     } else {
-        SymTab::add(n->getId(), Symbol(Type::IntPtr, n->getDims()));
+        SymTab::add(n->getId(), Symbol(valueToPtr(toType(n->type->type)), n->getDims()));
     }
     output(AST::FuncFParam);
     return n;

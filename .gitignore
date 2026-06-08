@@ -1,14 +1,13 @@
-.vscode
-.vs
-.idea
-.cache
+.vscode/
+.vs/
+.idea/
+.cache/
 
-# doc
-cmake-build-*
-build
-test
+cmake-build-*/
+build/
+test/
 
 *.exe
 *.zip
 
-bin
+bin/

@@ -17,6 +17,8 @@ struct LVal;
 
 struct Exp;
 
+struct Number;
+
 /*-------------------------Block-----------------------------*/
 // BlockItem → Decl | Stmt
 struct BlockItem {
@@ -41,6 +43,14 @@ struct Stmt : public BlockItem {
     static std::unique_ptr<Stmt> parse();
 
     static bool retVoid; // check return in FuncDef
+    static Type retType;
+};
+
+struct ControlFlow {
+    static int loopDepth;
+    static int switchDepth;
+    static std::stack<IR::Label> breakLabels;
+    static std::stack<IR::Label> continueLabels;
 };
 
 /*-----------------------------------------------------------*/
@@ -117,6 +127,35 @@ struct ContinueStmt : public Stmt {
     void genIR(IR::BasicBlocks &bBlocks) override;
 };
 
+// 'while' '(' Cond ')' Stmt
+struct WhileStmt : public Stmt {
+    std::unique_ptr<Cond> cond;
+    std::unique_ptr<Stmt> stmt;
+
+    static std::unique_ptr<WhileStmt> parse();
+
+    void genIR(IR::BasicBlocks &bBlocks) override;
+};
+
+// CaseStmt → 'case' Number ':' { Stmt } | 'default' ':' { Stmt }
+struct CaseStmt {
+    bool isDefault{false};
+    std::unique_ptr<Number> number;
+    std::vector<std::unique_ptr<Stmt>> stmts;
+
+    static std::unique_ptr<CaseStmt> parse();
+};
+
+// 'switch' '(' Exp ')' '{' { CaseStmt } '}'
+struct SwitchStmt : public Stmt {
+    std::unique_ptr<Exp> exp;
+    std::vector<std::unique_ptr<CaseStmt>> cases;
+
+    static std::unique_ptr<SwitchStmt> parse();
+
+    void genIR(IR::BasicBlocks &bBlocks) override;
+};
+
 // ForStmt → LVal '=' Exp
 struct ForStmt {
     std::unique_ptr<LVal> lVal;
@@ -171,6 +210,7 @@ struct PrintStmt : public Stmt {
     std::vector<std::unique_ptr<Exp>> exps;
 
     int numOfFormat; // error handling
+    std::vector<char> formatTypes;
 
     static std::unique_ptr<PrintStmt> parse();
 

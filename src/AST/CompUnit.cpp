@@ -13,7 +13,9 @@ using namespace Parser;
 std::unique_ptr<CompUnit> CompUnit::parse() {
     auto n = std::make_unique<CompUnit>();
 
-    while (Lexer::curLexType == LexType::CONSTTK || Lexer::curLexType == LexType::INTTK) {
+    SymTab::addBuiltins();
+
+    while (Lexer::curLexType == LexType::CONSTTK || Lexer::curLexType == LexType::INTTK || Lexer::curLexType == LexType::CHARTK) {
         if (Lexer::peek(1).first == LexType::IDENFR && Lexer::peek(2).first == LexType::LPARENT
             || Lexer::curLexType == LexType::INTTK && Lexer::peek(1).first == LexType::MAINTK) {
             break;
@@ -21,7 +23,7 @@ std::unique_ptr<CompUnit> CompUnit::parse() {
         n->decls.push_back(Decl::parse());
     }
 
-    while (Lexer::curLexType == LexType::VOIDTK || Lexer::curLexType == LexType::INTTK) {
+    while (Lexer::curLexType == LexType::VOIDTK || Lexer::curLexType == LexType::INTTK || Lexer::curLexType == LexType::CHARTK) {
         if (Lexer::curLexType == LexType::INTTK && Lexer::peek(1).first == LexType::MAINTK) {
             break;
         }
@@ -47,10 +49,13 @@ std::unique_ptr<IR::Module> CompUnit::genIR() const {
         for (auto &def: decl->getDefs()) {
             auto sym = SymTab::find(def->ident);
 
-            auto globVar = GlobVar(sym->cons, sym->dims, sym->initVal);
+            auto globVar = GlobVar(sym->cons, sym->type, sym->dims, sym->initVal);
             SymTab::knownVars.back().emplace(def->ident, 0);
             module->addGlobVar(def->ident, globVar);
         }
+    }
+    for (auto *sym: SymTab::getStaticVars()) {
+        module->addGlobVar(sym->storageName, GlobVar(sym->cons, sym->type, sym->dims, sym->initVal));
     }
 
     for (auto &funcDef: funcDefs) {

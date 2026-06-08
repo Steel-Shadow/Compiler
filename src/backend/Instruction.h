@@ -35,6 +35,8 @@ enum class Op {
     move,
     sw,
     lw,
+    sb,
+    lbu,
     li,
     la,
     syscall,
@@ -115,7 +117,10 @@ void Neg(const IR::Inst &);
 void Not(const IR::Inst &);
 void LoadImd(const IR::Inst &);
 void GetInt(const IR::Inst &);
+void GetChar(const IR::Inst &);
+void GetString(const IR::Inst &);
 void PrintInt(const IR::Inst &);
+void PrintChar(const IR::Inst &);
 void PrintStr(const IR::Inst &);
 void Alloca(const IR::Inst &);
 void Load(const IR::Inst &);

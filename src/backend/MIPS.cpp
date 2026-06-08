@@ -3,7 +3,6 @@
 //
 #include "MIPS.h"
 
-#include <iostream>
 #include <utility>
 
 #include "config.h"
@@ -51,11 +50,14 @@ void MIPS::genMIPS(const IR::Module &module) {
     output("#### MIPS ####");
     output(".data");
     for (auto &[name, globVar]: module.getGlobVars()) {
-        output(name + ": .word ", false);
-        for (auto i: globVar.initVal) {
-            output(std::to_string(i) + ", ", false);
+        std::string dataLine = name + (globVar.type == Type::Char ? ": .byte " : ": .word ");
+        for (int i = 0; i < static_cast<int>(globVar.initVal.size()); ++i) {
+            if (i != 0) {
+                dataLine += ", ";
+            }
+            dataLine += std::to_string(globVar.initVal[i]);
         }
-        output("");
+        output(dataLine);
     }
     int i = 0;
     for (const auto &str: IR::Str::MIPS_strings) {
@@ -86,7 +88,7 @@ void MIPS::genMIPS(const IR::Module &module) {
         int offset = 0;
         for (auto &[ident, sym]: func->getParams()) {
             StackMemory::varToOffset.emplace(IR::Var(ident, 1, false, sym->dims, sym->type), -offset);
-            offset += sizeOfType(sym->type);
+            offset += wordSize;
         }
 
         for (auto &basicBlock: func->getBasicBlocks()) {
@@ -316,8 +318,17 @@ void MIPS::irToMips(const IR::Inst &inst) {
         case IR::Op::GetInt:
             GetInt(inst);
             break;
+        case IR::Op::GetChar:
+            GetChar(inst);
+            break;
+        case IR::Op::GetString:
+            GetString(inst);
+            break;
         case IR::Op::PrintInt:
             PrintInt(inst);
+            break;
+        case IR::Op::PrintChar:
+            PrintChar(inst);
             break;
         case IR::Op::PrintStr:
             PrintStr(inst);

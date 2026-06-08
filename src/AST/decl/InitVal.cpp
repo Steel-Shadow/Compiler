@@ -14,6 +14,8 @@ std::unique_ptr<InitVal> InitVal::parse(bool cons) {
 
     if (Lexer::curLexType == LexType::LBRACE) {
         n = ArrayInitVal::parse(cons);
+    } else if (Lexer::curLexType == LexType::STRCON) {
+        n = StringInitVal::parse(cons);
     } else {
         n = ExpInitVal::parse(cons);
     }
@@ -80,4 +82,29 @@ std::vector<ExpInitVal *> ArrayInitVal::getFlatten() const {
         }
     }
     return flatten;
+}
+
+std::unique_ptr<StringInitVal> StringInitVal::parse(bool cons) {
+    auto n = std::make_unique<StringInitVal>();
+    n->cons = cons;
+    n->stringConst = Lexer::curToken;
+    Lexer::next();
+    return n;
+}
+
+std::vector<int> StringInitVal::evaluate() {
+    std::vector<int> bytes;
+    for (int i = 1; i < static_cast<int>(stringConst.length()) - 1; ++i) {
+        if (stringConst[i] == '\\' && i + 1 < static_cast<int>(stringConst.length()) - 1) {
+            ++i;
+            if (stringConst[i] == 'n') {
+                bytes.push_back('\n');
+            } else {
+                bytes.push_back(stringConst[i]);
+            }
+        } else {
+            bytes.push_back(static_cast<unsigned char>(stringConst[i]));
+        }
+    }
+    return bytes;
 }

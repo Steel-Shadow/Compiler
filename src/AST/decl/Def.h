@@ -16,6 +16,7 @@
 // VarDef → Ident { '[' ConstExp ']' } | Ident { '[' ConstExp ']' } '=' InitVal
 struct Def {
     bool cons;
+    bool statik{false};
 
     std::string ident;
 
@@ -25,7 +26,7 @@ struct Def {
     // can be empty for VarDef(cons=false)
     const std::unique_ptr<InitVal> &getInitVal() const;
 
-    static std::unique_ptr<Def> parse(bool cons, Type type);
+    static std::unique_ptr<Def> parse(bool cons, Type type, bool statik = false);
 
     const std::string &getIdent() const;
 

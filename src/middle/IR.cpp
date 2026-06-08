@@ -79,8 +79,14 @@ std::string Inst::opToStr(Op anOperator) {
             return "LoadImd";
         case Op::GetInt:
             return "GetInt";
+        case Op::GetChar:
+            return "GetChar";
+        case Op::GetString:
+            return "GetString";
         case Op::PrintInt:
             return "PrintInt";
+        case Op::PrintChar:
+            return "PrintChar";
         case Op::PrintStr:
             return "PrintStr";
         case Op::Alloca:
@@ -154,14 +160,17 @@ std::string Label::toString() const {
 
 GlobVar::GlobVar(
         bool cons,
+        Type type,
         std::vector<int> dims,
         std::vector<int> initVal) :
     cons(cons),
+    type(type),
     dims(std::move(dims)),
     initVal(std::move(initVal)) {}
 
-GlobVar::GlobVar(bool cons, const std::vector<int> &dims) :
+GlobVar::GlobVar(bool cons, Type type, const std::vector<int> &dims) :
     cons(cons),
+    type(type),
     dims(dims) {
     int size = 1;
     for (const int i: dims) {

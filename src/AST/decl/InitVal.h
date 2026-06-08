@@ -6,6 +6,7 @@
 #define COMPILER_INITVAL_H
 
 #include <memory>
+#include <string>
 #include <vector>
 
 struct Exp;
@@ -41,6 +42,14 @@ struct ArrayInitVal : public InitVal {
     std::vector<int> evaluate() override;
 
     std::vector<ExpInitVal *> getFlatten() const;
+};
+
+struct StringInitVal : public InitVal {
+    std::string stringConst;
+
+    static std::unique_ptr<StringInitVal> parse(bool cons);
+
+    std::vector<int> evaluate() override;
 };
 
 #endif

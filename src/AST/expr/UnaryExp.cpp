@@ -10,9 +10,30 @@
 #include "frontend/symTab/SymTab.h"
 
 
-#include <iostream>
-
 using namespace Parser;
+
+int decodeCharConst(const std::string &token) {
+    if (token.size() >= 4 && token[1] == '\\') {
+        switch (token[2]) {
+            case 'n':
+                return '\n';
+            case 't':
+                return '\t';
+            case 'r':
+                return '\r';
+            case '0':
+                return '\0';
+            case '\\':
+                return '\\';
+            case '\'':
+                return '\'';
+            default:
+                Error::raise('a');
+                return token[2];
+        }
+    }
+    return token.size() >= 3 ? static_cast<unsigned char>(token[1]) : 0;
+}
 
 std::unique_ptr<LVal> LVal::parse() {
     auto n = std::make_unique<LVal>();
@@ -25,7 +46,11 @@ std::unique_ptr<LVal> LVal::parse() {
     while (Lexer::curLexType == LexType::LBRACK) {
         Lexer::next();
         int row = Lexer::curRow;
-        n->dims.push_back(Exp::parse(false));
+        auto index = Exp::parse(false);
+        if (index->getType() != Type::Int) {
+            Error::raise('e', row);
+        }
+        n->dims.push_back(std::move(index));
         singleLex(LexType::RBRACK, row);
     }
 
@@ -45,16 +70,16 @@ std::unique_ptr<IR::Temp> LVal::genIR(IR::BasicBlocks &bBlocks) {
     using namespace IR;
     auto [symbol, depth] = SymTab::findInGen(ident);
     auto var = std::make_unique<IR::Var>(
-            ident,
-            depth,
+            getStorageName(symbol, ident),
+            getStorageDepth(symbol, depth),
             symbol->cons,
             symbol->dims,
             symbol->type,
             symbol->symType);
 
-    auto res = std::make_unique<Temp>(symbol->type);
+    auto res = std::make_unique<Temp>(ptrToValue(symbol->type));
 
-    if (symbol->type == Type::IntPtr) {
+    if (isPtrType(symbol->type)) {
         auto addr = std::make_unique<Temp>(Type::Int);
         bBlocks.back()->addInst(Inst(IR::Op::Load,
                                      std::make_unique<Temp>(*addr),
@@ -62,7 +87,7 @@ std::unique_ptr<IR::Temp> LVal::genIR(IR::BasicBlocks &bBlocks) {
                                      nullptr));
         int constOffset;
         std::unique_ptr<Temp> dynamicOffset;
-        bool getNonConstIndex = getOffset(constOffset, dynamicOffset, bBlocks, symbol->dims);
+        bool getNonConstIndex = getOffset(constOffset, dynamicOffset, bBlocks, symbol->dims, symbol->type);
         if (getNonConstIndex) {
             auto addrElem = std::make_unique<Temp>(Type::Int);
             bBlocks.back()->addInst(Inst(IR::Op::Add,
@@ -89,7 +114,7 @@ std::unique_ptr<IR::Temp> LVal::genIR(IR::BasicBlocks &bBlocks) {
         } else {
             int constOffset;
             std::unique_ptr<Temp> dynamicOffset;
-            bool getNonConstIndex = getOffset(constOffset, dynamicOffset, bBlocks, symbol->dims);
+            bool getNonConstIndex = getOffset(constOffset, dynamicOffset, bBlocks, symbol->dims, symbol->type);
             if (getNonConstIndex) {
                 bBlocks.back()->addInst(Inst(IR::Op::LoadDynamic,
                                              std::make_unique<Temp>(*res),
@@ -124,7 +149,7 @@ int LVal::evaluate() {
     }
 }
 
-bool LVal::getOffset(int &constOffset, std::unique_ptr<IR::Temp> &dynamicOffset, IR::BasicBlocks &bBlocks, const std::vector<int> &symDims) const {
+bool LVal::getOffset(int &constOffset, std::unique_ptr<IR::Temp> &dynamicOffset, IR::BasicBlocks &bBlocks, const std::vector<int> &symDims, Type type) const {
     constOffset = 0;
     auto product = 1;
     bool getNonConstIndex = false;
@@ -180,10 +205,18 @@ bool LVal::getOffset(int &constOffset, std::unique_ptr<IR::Temp> &dynamicOffset,
     }
 
     if (getNonConstIndex) {
-        bBlocks.back()->addInst(IR::Inst(IR::Op::Mult4,
-                                         std::make_unique<IR::Temp>(*dynamicOffset),
-                                         std::make_unique<IR::Temp>(*dynamicOffset),
-                                         nullptr));
+        int elementSize = sizeOfType(ptrToValue(type));
+        if (elementSize == 4) {
+            bBlocks.back()->addInst(IR::Inst(IR::Op::Mult4,
+                                             std::make_unique<IR::Temp>(*dynamicOffset),
+                                             std::make_unique<IR::Temp>(*dynamicOffset),
+                                             nullptr));
+        } else if (elementSize != 1) {
+            bBlocks.back()->addInst(IR::Inst(IR::Op::MulImd,
+                                             std::make_unique<IR::Temp>(*dynamicOffset),
+                                             std::make_unique<IR::Temp>(*dynamicOffset),
+                                             std::make_unique<IR::ConstVal>(elementSize, Type::Int)));
+        }
     }
 
     return getNonConstIndex;
@@ -200,7 +233,7 @@ std::unique_ptr<PrimaryExp> PrimaryExp::parse() {
         n = PareExp::parse();
     } else if (Lexer::curLexType == LexType::IDENFR) {
         n = LVal::parse();
-    } else if (Lexer::curLexType == LexType::INTCON) {
+    } else if (Lexer::curLexType == LexType::INTCON || Lexer::curLexType == LexType::CHARCON) {
         n = Number::parse();
     }
     output(AST::PrimaryExp);
@@ -249,6 +282,11 @@ std::unique_ptr<Number> Number::parse() {
 
     if (Lexer::curLexType == LexType::INTCON) {
         n->intConst = std::stoi(Lexer::curToken);
+        n->type = Type::Int;
+        Lexer::next();
+    } else if (Lexer::curLexType == LexType::CHARCON) {
+        n->intConst = decodeCharConst(Lexer::curToken);
+        n->type = Type::Char;
         Lexer::next();
     } else {
         Error::raise();
@@ -264,17 +302,17 @@ int Number::evaluate() {
 
 std::unique_ptr<IR::Temp> Number::genIR(IR::BasicBlocks &bBlocks) {
     using namespace IR;
-    auto n = std::make_unique<Temp>(Type::Int);
+    auto n = std::make_unique<Temp>(type);
 
     bBlocks.back()->addInst(Inst(Op::LoadImd,
                                  std::make_unique<Temp>(*n),
-                                 std::make_unique<ConstVal>(intConst, Type::Int),
+                                 std::make_unique<ConstVal>(intConst, type),
                                  nullptr));
     return n;
 }
 
 Type Number::getType() {
-    return Type::Int;
+    return type;
 }
 
 std::unique_ptr<UnaryExp> UnaryExp::parse() {
@@ -295,7 +333,17 @@ std::unique_ptr<UnaryExp> UnaryExp::parse() {
                 break;
 
             case LexType::LPARENT:
+                if ((Lexer::peek(1).first == LexType::INTTK || Lexer::peek(1).first == LexType::CHARTK)
+                    && Lexer::peek(2).first == LexType::RPARENT) {
+                    n->baseUnaryExp = CastExp::parse();
+                    getBaseUnaryExp = true;
+
+                    output(AST::UnaryExp);
+                    break;
+                }
+                [[fallthrough]];
             case LexType::INTCON:
+            case LexType::CHARCON:
                 // PrimaryExp → '(' Exp ')' | LVal | Number
                 n->baseUnaryExp = PrimaryExp::parse();
                 getBaseUnaryExp = true;
@@ -373,7 +421,7 @@ std::unique_ptr<IR::Temp> UnaryExp::genIR(IR::BasicBlocks &bBlocks) const {
                     nullptr));
             res = std::move(negRes);
         } else if (op == LexType::NOT) {
-            auto notRes = std::make_unique<Temp>(res->type);
+            auto notRes = std::make_unique<Temp>(Type::Int);
             bBlocks.back()->addInst(Inst(
                     Op::Not,
                     std::make_unique<Temp>(*notRes),
@@ -394,6 +442,11 @@ LVal *UnaryExp::getLVal() const {
 }
 
 Type UnaryExp::getType() const {
+    for (LexType op: ops) {
+        if (op == LexType::NOT) {
+            return Type::Int;
+        }
+    }
     return baseUnaryExp->getType();
 }
 
@@ -480,6 +533,81 @@ void FuncCall::checkParams(const std::unique_ptr<FuncCall> &n, int row, const Sy
 std::unique_ptr<IR::Temp> FuncCall::genIR(IR::BasicBlocks &bBlocks) {
     using namespace IR;
     auto funcSym = SymTab::find(ident);
+
+    auto makeVarFromLVal = [](LVal *lVal) {
+        auto [symbol, depth] = SymTab::findInGen(lVal->ident);
+        return std::make_unique<Var>(
+                getStorageName(symbol, lVal->ident),
+                getStorageDepth(symbol, depth),
+                symbol->cons,
+                symbol->dims,
+                symbol->type,
+                symbol->symType);
+    };
+
+    if (ident == "get_int" || ident == "get_char") {
+        bBlocks.back()->addInst(Inst(ident == "get_int" ? Op::GetInt : Op::GetChar,
+                                     nullptr,
+                                     nullptr,
+                                     nullptr));
+        auto temp = std::make_unique<Temp>(funcSym->type);
+        bBlocks.back()->addInst(Inst(Op::NewMove,
+                                     std::make_unique<Temp>(*temp),
+                                     std::make_unique<Temp>(-static_cast<int>(MIPS::Register::v0), funcSym->type),
+                                     nullptr));
+        return temp;
+    }
+
+    if (ident == "put_int" || ident == "put_char") {
+        if (funcRParams && !funcRParams->params.empty()) {
+            auto value = funcRParams->params[0]->genIR(bBlocks);
+            bBlocks.back()->addInst(Inst(ident == "put_int" ? Op::PrintInt : Op::PrintChar,
+                                         nullptr,
+                                         std::move(value),
+                                         nullptr));
+        }
+        return nullptr;
+    }
+
+    if (ident == "put_string" || ident == "put_str") {
+        if (funcRParams && !funcRParams->params.empty()) {
+            if (auto lVal = funcRParams->params[0]->getLVal()) {
+                auto [symbol, depth] = SymTab::findInGen(lVal->ident);
+                auto var = makeVarFromLVal(lVal);
+                int constOffset = 0;
+                std::unique_ptr<Temp> dynamicOffset;
+                bool getNonConstIndex = lVal->getOffset(constOffset, dynamicOffset, bBlocks, symbol->dims, symbol->type);
+                bBlocks.back()->addInst(Inst(Op::PrintStr,
+                                             nullptr,
+                                             std::move(var),
+                                             getNonConstIndex
+                                                     ? std::unique_ptr<Element>(std::move(dynamicOffset))
+                                                     : std::unique_ptr<Element>(std::make_unique<ConstVal>(constOffset, Type::Int))));
+            }
+        }
+        return nullptr;
+    }
+
+    if (ident == "get_string") {
+        if (funcRParams && funcRParams->params.size() >= 2) {
+            if (auto lVal = funcRParams->params[0]->getLVal()) {
+                auto [symbol, depth] = SymTab::findInGen(lVal->ident);
+                auto var = makeVarFromLVal(lVal);
+                int constOffset = 0;
+                std::unique_ptr<Temp> dynamicOffset;
+                bool getNonConstIndex = lVal->getOffset(constOffset, dynamicOffset, bBlocks, symbol->dims, symbol->type);
+                auto maxLen = funcRParams->params[1]->genIR(bBlocks);
+                bBlocks.back()->addInst(Inst(Op::GetString,
+                                             std::move(maxLen),
+                                             std::move(var),
+                                             getNonConstIndex
+                                                     ? std::unique_ptr<Element>(std::move(dynamicOffset))
+                                                     : std::unique_ptr<Element>(std::make_unique<ConstVal>(constOffset, Type::Int))));
+            }
+        }
+        return nullptr;
+    }
+
     bBlocks.back()->addInst(Inst(Op::InStack, nullptr, nullptr, nullptr));
 
     if (funcRParams) {
@@ -500,9 +628,10 @@ std::unique_ptr<IR::Temp> FuncCall::genIR(IR::BasicBlocks &bBlocks) {
                                              nullptr));
             } else {
                 // array (pass param by address)
+                auto [paramSymbol, paramDepth] = SymTab::findInGen(name);
                 auto var = std::make_unique<Var>(
-                        name,
-                        SymTab::findDepth(name),
+                        getStorageName(paramSymbol, name),
+                        getStorageDepth(paramSymbol, paramDepth),
                         symbol->cons,
                         symbol->dims,
                         symbol->type,
@@ -511,7 +640,7 @@ std::unique_ptr<IR::Temp> FuncCall::genIR(IR::BasicBlocks &bBlocks) {
                 int constOffset;
                 std::unique_ptr<Temp> dynamicOffset;
                 bool getNonConstIndex = rParam->getLVal()->getOffset(
-                        constOffset, dynamicOffset, bBlocks, symbol->dims);
+                        constOffset, dynamicOffset, bBlocks, symbol->dims, symbol->type);
 
                 if (getNonConstIndex) {
                     bBlocks.back()->addInst(Inst(
@@ -536,11 +665,11 @@ std::unique_ptr<IR::Temp> FuncCall::genIR(IR::BasicBlocks &bBlocks) {
                                  nullptr));
     bBlocks.back()->addInst(Inst(Op::OutStack, nullptr, nullptr, nullptr));
 
-    if (funcSym->type == Type::Int) {
-        auto temp = std::make_unique<Temp>(Type::Int);
+    if (funcSym->type == Type::Int || funcSym->type == Type::Char) {
+        auto temp = std::make_unique<Temp>(funcSym->type);
         bBlocks.back()->addInst(Inst(IR::Op::NewMove,
                                      std::make_unique<Temp>(*temp),
-                                     std::make_unique<Temp>(-static_cast<int>(MIPS::Register::v0), Type::Int),
+                                     std::make_unique<Temp>(-static_cast<int>(MIPS::Register::v0), funcSym->type),
                                      nullptr));
         return temp;
     } else {
@@ -555,4 +684,54 @@ Type FuncCall::getType() {
 
 const std::string &FuncCall::getIdent() const {
     return ident;
+}
+
+std::unique_ptr<CastExp> CastExp::parse() {
+    auto n = std::make_unique<CastExp>();
+
+    Lexer::next(); // (
+    auto type = Btype::parse();
+    n->targetType = toType(type->type);
+
+    int row = Lexer::curRow;
+    singleLex(LexType::RPARENT, row);
+
+    n->unaryExp = UnaryExp::parse();
+    return n;
+}
+
+int CastExp::evaluate() {
+    int value = unaryExp->evaluate();
+    if (targetType == Type::Char) {
+        return value & 0xFF;
+    }
+    return value;
+}
+
+std::unique_ptr<IR::Temp> CastExp::genIR(IR::BasicBlocks &bBlocks) {
+    using namespace IR;
+    auto value = unaryExp->genIR(bBlocks);
+    auto res = std::make_unique<Temp>(targetType);
+
+    if (targetType == Type::Char) {
+        auto mask = std::make_unique<Temp>(Type::Int);
+        bBlocks.back()->addInst(Inst(Op::LoadImd,
+                                     std::make_unique<Temp>(*mask),
+                                     std::make_unique<ConstVal>(0xFF, Type::Int),
+                                     nullptr));
+        bBlocks.back()->addInst(Inst(Op::And,
+                                     std::make_unique<Temp>(*res),
+                                     std::move(value),
+                                     std::move(mask)));
+    } else {
+        bBlocks.back()->addInst(Inst(Op::NewMove,
+                                     std::make_unique<Temp>(*res),
+                                     std::move(value),
+                                     nullptr));
+    }
+    return res;
+}
+
+Type CastExp::getType() {
+    return targetType;
 }

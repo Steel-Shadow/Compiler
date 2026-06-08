@@ -93,6 +93,19 @@ Word Lexer::next() {
         }
         // error: bad number
         lexType = LexType::INTCON;
+    } else if (c == '\'') {
+        while (nextChar() != EOF) {
+            token += c;
+            if (c == '\\') {
+                nextChar();
+                token += c;
+            } else if (c == '\'') {
+                break;
+            }
+        }
+
+        lexType = LexType::CHARCON;
+        nextChar();
     } else if (c == '_' || isalpha(c)) {
         while (nextChar(), c == '_' || isalpha(c) || isdigit(c)) {
             token += c;
@@ -151,6 +164,16 @@ Word Lexer::next() {
                 break;
             }
         }
+        if (lexType == LexType::LEX_EMPTY) {
+            if (c == '&' || c == '|') {
+                Error::raise('a');
+                lexType = c == '&' ? LexType::AND : LexType::OR;
+            } else {
+                lexType = LexType::LEX_EMPTY;
+            }
+            token = std::string(1, c);
+            nextChar();
+        }
     }
 
     if (lexType == LexType::COMMENT) {
@@ -176,10 +199,16 @@ void buildReserveWords() {
     reserveWords.put("main", LexType::MAINTK);
     reserveWords.put("const", LexType::CONSTTK);
     reserveWords.put("int", LexType::INTTK);
+    reserveWords.put("char", LexType::CHARTK);
+    reserveWords.put("static", LexType::STATICTK);
     reserveWords.put("break", LexType::BREAKTK);
     reserveWords.put("continue", LexType::CONTINUETK);
     reserveWords.put("if", LexType::IFTK);
     reserveWords.put("else", LexType::ELSETK);
+    reserveWords.put("while", LexType::WHILETK);
+    reserveWords.put("switch", LexType::SWITCHTK);
+    reserveWords.put("case", LexType::CASETK);
+    reserveWords.put("default", LexType::DEFAULTTK);
     reserveWords.put("&&", LexType::AND);
     reserveWords.put("||", LexType::OR);
     reserveWords.put("for", LexType::FORTK);
@@ -202,6 +231,7 @@ void buildReserveWords() {
     reserveWords.put("=", LexType::ASSIGN);
     reserveWords.put(";", LexType::SEMICN);
     reserveWords.put(",", LexType::COMMA);
+    reserveWords.put(":", LexType::COLON);
     reserveWords.put("(", LexType::LPARENT);
     reserveWords.put(")", LexType::RPARENT);
     reserveWords.put("[", LexType::LBRACK);

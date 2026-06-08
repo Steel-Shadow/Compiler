@@ -5,10 +5,13 @@
 #include "Stmt.h"
 
 #include "AST/decl/Decl.h"
+#include "AST/expr/Exp.h"
 #include "backend/Instruction.h"
 #include "errorHandler/Error.h"
 #include "frontend/parser/Parser.h"
 #include "frontend/symTab/SymTab.h"
+
+#include <set>
 
 using namespace Parser;
 
@@ -39,7 +42,8 @@ std::unique_ptr<BlockItem> BlockItem::parse() {
     std::unique_ptr<BlockItem> n;
 
     // Maybe error when neither Decl nor Stmt. But it's too complicated.
-    if (Lexer::curLexType == LexType::CONSTTK || Lexer::curLexType == LexType::INTTK) {
+    if (Lexer::curLexType == LexType::CONSTTK || Lexer::curLexType == LexType::STATICTK
+        || Lexer::curLexType == LexType::INTTK || Lexer::curLexType == LexType::CHARTK) {
         n = Decl::parse();
     } else {
         n = Stmt::parse();
@@ -57,6 +61,12 @@ void Block::genIR(IR::BasicBlocks &basicBlocks) const {
 }
 
 bool Stmt::retVoid;
+Type Stmt::retType = Type::Void;
+
+int ControlFlow::loopDepth = 0;
+int ControlFlow::switchDepth = 0;
+std::stack<IR::Label> ControlFlow::breakLabels{};
+std::stack<IR::Label> ControlFlow::continueLabels{};
 
 std::unique_ptr<Stmt> Stmt::parse() {
     std::unique_ptr<Stmt> n;
@@ -67,6 +77,12 @@ std::unique_ptr<Stmt> Stmt::parse() {
             break;
         case LexType::IFTK:
             n = IfStmt::parse();
+            break;
+        case LexType::WHILETK:
+            n = WhileStmt::parse();
+            break;
+        case LexType::SWITCHTK:
+            n = SwitchStmt::parse();
             break;
         case LexType::BREAKTK:
             n = BreakStmt::parse();
@@ -159,6 +175,7 @@ std::unique_ptr<BigForStmt> BigForStmt::parse() {
     auto n = std::make_unique<BigForStmt>();
 
     inForDepth++;
+    ControlFlow::loopDepth++;
 
     Lexer::next();
     singleLex(LexType::LPARENT);
@@ -183,6 +200,7 @@ std::unique_ptr<BigForStmt> BigForStmt::parse() {
     n->stmt = Stmt::parse();
 
     inForDepth--;
+    ControlFlow::loopDepth--;
     SymTab::deepOut(); // ForStmt
     return n;
 }
@@ -206,6 +224,8 @@ void BigForStmt::genIR(IR::BasicBlocks &bBlocks) {
 
     stackEndLabel.push(forEndBlock->label);
     stackIterLabel.push(forIterCondBlock->label);
+    ControlFlow::breakLabels.push(forEndBlock->label);
+    ControlFlow::continueLabels.push(forIterCondBlock->label);
 
     // use unique_ptr after move
     auto pForBodyBlock = forBodyBlock.get();
@@ -234,6 +254,8 @@ void BigForStmt::genIR(IR::BasicBlocks &bBlocks) {
 
     stackEndLabel.pop();
     stackIterLabel.pop();
+    ControlFlow::breakLabels.pop();
+    ControlFlow::continueLabels.pop();
 
     SymTab::iterOut();
     bBlocks.back()->addInst(IR::Inst(
@@ -255,9 +277,9 @@ void ForStmt::genIR(IR::BasicBlocks &basicBlocks) const {
     using namespace IR;
     auto t = exp->genIR(basicBlocks);
 
-    auto sym = SymTab::find(lVal->ident);
-    auto irLVal = std::make_unique<Var>(lVal->ident,
-                                        SymTab::findDepth(lVal->ident),
+    auto [sym, depth] = SymTab::findInGen(lVal->ident);
+    auto irLVal = std::make_unique<Var>(getStorageName(sym, lVal->ident),
+                                        getStorageDepth(sym, depth),
                                         sym->cons,
                                         sym->dims,
                                         sym->type);
@@ -270,7 +292,7 @@ void ForStmt::genIR(IR::BasicBlocks &basicBlocks) const {
 std::unique_ptr<BreakStmt> BreakStmt::parse() {
     int row = Lexer::curRow;
 
-    if (BigForStmt::inForDepth == 0) {
+    if (ControlFlow::loopDepth == 0 && ControlFlow::switchDepth == 0) {
         Error::raise('m', row);
     }
 
@@ -283,14 +305,14 @@ void BreakStmt::genIR(IR::BasicBlocks &bBlocks) {
     using namespace IR;
     bBlocks.back()->addInst(Inst(IR::Op::Br,
                                  nullptr,
-                                 std::make_unique<Label>(BigForStmt::stackEndLabel.top()),
+                                 std::make_unique<Label>(ControlFlow::breakLabels.top()),
                                  nullptr));
 }
 
 std::unique_ptr<ContinueStmt> ContinueStmt::parse() {
     int row = Lexer::curRow;
 
-    if (BigForStmt::inForDepth == 0) {
+    if (ControlFlow::loopDepth == 0) {
         Error::raise('m', row);
     }
 
@@ -303,8 +325,199 @@ void ContinueStmt::genIR(IR::BasicBlocks &bBlocks) {
     using namespace IR;
     bBlocks.back()->addInst(Inst(IR::Op::Br,
                                  nullptr,
-                                 std::make_unique<Label>(BigForStmt::stackIterLabel.top()),
+                                 std::make_unique<Label>(ControlFlow::continueLabels.top()),
                                  nullptr));
+}
+
+std::unique_ptr<WhileStmt> WhileStmt::parse() {
+    auto n = std::make_unique<WhileStmt>();
+
+    ControlFlow::loopDepth++;
+    Lexer::next();
+
+    SymTab::deepIn();
+    singleLex(LexType::LPARENT);
+
+    int row = Lexer::curRow;
+    n->cond = Cond::parse();
+    singleLex(LexType::RPARENT, row);
+
+    n->stmt = Stmt::parse();
+
+    SymTab::deepOut();
+    ControlFlow::loopDepth--;
+    return n;
+}
+
+void WhileStmt::genIR(IR::BasicBlocks &bBlocks) {
+    using namespace IR;
+    SymTab::iterIn();
+    bBlocks.back()->addInst(Inst(Op::InStack, nullptr, nullptr, nullptr));
+
+    auto condBlock = std::make_unique<BasicBlock>("WhileCond");
+    auto bodyBlock = std::make_unique<BasicBlock>("WhileBody");
+    auto endBlock = std::make_unique<BasicBlock>("WhileEnd");
+
+    bBlocks.back()->addInst(Inst(Op::Br, nullptr, std::make_unique<Label>(condBlock->label), nullptr));
+
+    auto condLabel = condBlock->label;
+    auto bodyLabel = bodyBlock->label;
+    auto endLabel = endBlock->label;
+
+    ControlFlow::breakLabels.push(endLabel);
+    ControlFlow::continueLabels.push(condLabel);
+
+    bBlocks.emplace_back(std::move(condBlock));
+    cond->genIR(bBlocks, bodyLabel, endLabel);
+
+    bBlocks.emplace_back(std::move(bodyBlock));
+    stmt->genIR(bBlocks);
+    bBlocks.back()->addInst(Inst(Op::Br, nullptr, std::make_unique<Label>(condLabel), nullptr));
+
+    bBlocks.emplace_back(std::move(endBlock));
+
+    ControlFlow::breakLabels.pop();
+    ControlFlow::continueLabels.pop();
+
+    bBlocks.back()->addInst(Inst(Op::OutStack, nullptr, nullptr, nullptr));
+    SymTab::iterOut();
+}
+
+std::unique_ptr<CaseStmt> CaseStmt::parse() {
+    auto n = std::make_unique<CaseStmt>();
+
+    if (Lexer::curLexType == LexType::CASETK) {
+        Lexer::next();
+        n->number = Number::parse();
+        singleLex(LexType::COLON);
+    } else if (Lexer::curLexType == LexType::DEFAULTTK) {
+        n->isDefault = true;
+        Lexer::next();
+        singleLex(LexType::COLON);
+    } else {
+        Error::raise();
+    }
+
+    while (Lexer::curLexType != LexType::CASETK
+           && Lexer::curLexType != LexType::DEFAULTTK
+           && Lexer::curLexType != LexType::RBRACE
+           && Lexer::curLexType != LexType::LEX_END) {
+        n->stmts.push_back(Stmt::parse());
+    }
+
+    return n;
+}
+
+std::unique_ptr<SwitchStmt> SwitchStmt::parse() {
+    auto n = std::make_unique<SwitchStmt>();
+
+    Lexer::next();
+    singleLex(LexType::LPARENT);
+    int row = Lexer::curRow;
+    n->exp = Exp::parse(false);
+    singleLex(LexType::RPARENT, row);
+    singleLex(LexType::LBRACE);
+
+    ControlFlow::switchDepth++;
+    std::set<int> caseValues;
+    bool hasDefault = false;
+    Type switchType = ptrToValue(n->exp->getType());
+
+    while (Lexer::curLexType == LexType::CASETK || Lexer::curLexType == LexType::DEFAULTTK) {
+        int caseRow = Lexer::curRow;
+        auto caseStmt = CaseStmt::parse();
+        if (caseStmt->isDefault) {
+            if (hasDefault) {
+                Error::raise('n', caseRow);
+            }
+            hasDefault = true;
+        } else {
+            int value = caseStmt->number->evaluate();
+            if (caseStmt->number->getType() != switchType) {
+                Error::raise('e', caseRow);
+            }
+            if (!caseValues.insert(value).second) {
+                Error::raise('n', caseRow);
+            }
+        }
+        n->cases.emplace_back(std::move(caseStmt));
+    }
+
+    ControlFlow::switchDepth--;
+    singleLex(LexType::RBRACE);
+    return n;
+}
+
+void SwitchStmt::genIR(IR::BasicBlocks &bBlocks) {
+    using namespace IR;
+    auto value = exp->genIR(bBlocks);
+    static int switchId = 0;
+    std::string switchName = "__switch_" + std::to_string(switchId++);
+    int switchDepth = SymTab::cur->getDepth();
+    auto switchVar = std::make_unique<Var>(switchName, switchDepth, false, std::vector<int>{}, value->type);
+    auto switchVarCopy = std::make_unique<Var>(*switchVar);
+    bBlocks.back()->addInst(Inst(Op::Alloca,
+                                 nullptr,
+                                 std::move(switchVar),
+                                 std::make_unique<ConstVal>(1, Type::Int)));
+    bBlocks.back()->addInst(Inst(Op::Store,
+                                 std::move(value),
+                                 std::move(switchVarCopy),
+                                 nullptr));
+
+    std::vector<std::unique_ptr<BasicBlock>> caseBlocks;
+    caseBlocks.reserve(cases.size());
+    BasicBlock *defaultBlock = nullptr;
+    for (auto &caseStmt: cases) {
+        auto block = std::make_unique<BasicBlock>(caseStmt->isDefault ? "SwitchDefault" : "SwitchCase");
+        if (caseStmt->isDefault) {
+            defaultBlock = block.get();
+        }
+        caseBlocks.emplace_back(std::move(block));
+    }
+    auto endBlock = std::make_unique<BasicBlock>("SwitchEnd");
+    auto endLabel = endBlock->label;
+
+    for (int i = 0; i < cases.size(); ++i) {
+        if (cases[i]->isDefault) {
+            continue;
+        }
+        auto switchValue = std::make_unique<Temp>(exp->getType());
+        bBlocks.back()->addInst(Inst(Op::Load,
+                                     std::make_unique<Temp>(*switchValue),
+                                     std::make_unique<Var>(switchName, switchDepth, false, std::vector<int>{}, exp->getType()),
+                                     nullptr));
+        auto caseValue = std::make_unique<Temp>(cases[i]->number->getType());
+        bBlocks.back()->addInst(Inst(Op::LoadImd,
+                                     std::make_unique<Temp>(*caseValue),
+                                     std::make_unique<ConstVal>(cases[i]->number->evaluate(), cases[i]->number->getType()),
+                                     nullptr));
+        auto cmp = std::make_unique<Temp>(Type::Int);
+        bBlocks.back()->addInst(Inst(Op::Eql,
+                                     std::make_unique<Temp>(*cmp),
+                                     std::move(switchValue),
+                                     std::move(caseValue)));
+        bBlocks.back()->addInst(Inst(Op::Bif1,
+                                     nullptr,
+                                     std::move(cmp),
+                                     std::make_unique<Label>(caseBlocks[i]->label)));
+    }
+
+    bBlocks.back()->addInst(Inst(Op::Br,
+                                 nullptr,
+                                 std::make_unique<Label>(defaultBlock ? defaultBlock->label : endLabel),
+                                 nullptr));
+
+    ControlFlow::breakLabels.push(endLabel);
+    for (int i = 0; i < cases.size(); ++i) {
+        bBlocks.emplace_back(std::move(caseBlocks[i]));
+        for (auto &stmt: cases[i]->stmts) {
+            stmt->genIR(bBlocks);
+        }
+    }
+    ControlFlow::breakLabels.pop();
+
+    bBlocks.emplace_back(std::move(endBlock));
 }
 
 std::unique_ptr<ReturnStmt> ReturnStmt::parse() {
@@ -320,6 +533,9 @@ std::unique_ptr<ReturnStmt> ReturnStmt::parse() {
         }
         int row = Lexer::curRow; // error handle
         n->exp = Exp::parse(false);
+        if (!Stmt::retVoid && n->exp->getType() != Stmt::retType) {
+            Error::raise('e', row);
+        }
         singleLex(LexType::SEMICN, row);
     }
 
@@ -354,9 +570,11 @@ void PrintStmt::checkFormatString(const std::string &str) {
                 Error::raise('a');
             }
         } else if (c == '%') {
-            if (str[++i] != 'd') {
+            char format = str[++i];
+            if (format != 'd' && format != 'c' && format != 's') {
                 Error::raise('a');
             } else {
+                formatTypes.push_back(format);
                 numOfFormat++;
             }
         } else if (!(c == 32 || c == 33 || c >= 40 && c <= 126)) {
@@ -391,6 +609,20 @@ std::unique_ptr<PrintStmt> PrintStmt::parse() {
     if (numOfExp != n->numOfFormat) {
         Error::raise('l', row);
     }
+    for (int i = 0; i < n->exps.size() && i < n->formatTypes.size(); ++i) {
+        Type expType = ptrToValue(n->exps[i]->getType());
+        if ((n->formatTypes[i] == 'd' && expType != Type::Int)
+            || (n->formatTypes[i] == 'c' && expType != Type::Char)) {
+            Error::raise('e', row);
+        } else if (n->formatTypes[i] == 's') {
+            auto lVal = n->exps[i]->getLVal();
+            auto ident = n->exps[i]->getIdent();
+            auto sym = ident.empty() ? nullptr : SymTab::find(ident);
+            if (lVal == nullptr || sym == nullptr || ptrToValue(sym->type) != Type::Char || sym->dims.size() <= lVal->getRank()) {
+                Error::raise('e', row);
+            }
+        }
+    }
 
     singleLex(LexType::RPARENT, row);
     singleLex(LexType::SEMICN, row);
@@ -413,23 +645,40 @@ void PrintStmt::addStr(const IR::BasicBlocks &bBlocks, std::string &buffer) {
 void PrintStmt::genIR(IR::BasicBlocks &bBlocks) {
     using namespace IR;
 
-    std::vector<std::unique_ptr<Temp>> args(exps.size());
-    for (int i = 0; i < exps.size(); ++i) {
-        args[i] = exps[i]->genIR(bBlocks);
-    }
-
-    // string | %d
+    // string | %d | %c | %s
     std::string buffer;
     // skip \" in formatString
     for (int i = 1, j = 0; i < formatString.length() - 1; i++) {
         if (formatString[i] == '%') {
-            i++;
+            char format = formatString[++i];
             addStr(bBlocks, buffer);
 
-            bBlocks.back()->addInst(Inst(IR::Op::PrintInt,
-                                         nullptr,
-                                         std::move(args[j++]),
-                                         nullptr));
+            if (format == 'd' || format == 'c') {
+                auto value = exps[j++]->genIR(bBlocks);
+                bBlocks.back()->addInst(Inst(format == 'd' ? IR::Op::PrintInt : IR::Op::PrintChar,
+                                             nullptr,
+                                             std::move(value),
+                                             nullptr));
+            } else if (format == 's') {
+                auto lVal = exps[j++]->getLVal();
+                auto [symbol, depth] = SymTab::findInGen(lVal->ident);
+                auto var = std::make_unique<IR::Var>(
+                        getStorageName(symbol, lVal->ident),
+                        getStorageDepth(symbol, depth),
+                        symbol->cons,
+                        symbol->dims,
+                        symbol->type,
+                        symbol->symType);
+                int constOffset = 0;
+                std::unique_ptr<Temp> dynamicOffset;
+                bool getNonConstIndex = lVal->getOffset(constOffset, dynamicOffset, bBlocks, symbol->dims, symbol->type);
+                bBlocks.back()->addInst(Inst(IR::Op::PrintStr,
+                                             nullptr,
+                                             std::move(var),
+                                             getNonConstIndex
+                                                     ? std::unique_ptr<Element>(std::move(dynamicOffset))
+                                                     : std::unique_ptr<Element>(std::make_unique<ConstVal>(constOffset, Type::Int))));
+            }
         } else {
             buffer += formatString[i];
         }
@@ -453,9 +702,18 @@ std::unique_ptr<LValStmt> LValStmt::parse() {
     if (Lexer::curLexType == LexType::GETINTTK) {
         n = GetIntStmt::parse();
         n->lVal = std::move(lVal);
+        if (sym && ptrToValue(sym->type) != Type::Int) {
+            Error::raise('e', row);
+        }
     } else {
         n = AssignStmt::parse();
         n->lVal = std::move(lVal);
+        if (auto assign = dynamic_cast<AssignStmt *>(n.get())) {
+            if (sym && (sym->dims.size() != n->lVal->dims.size()
+                        || ptrToValue(sym->type) != assign->exp->getType())) {
+                Error::raise('e', row);
+            }
+        }
     }
 
     return n;
@@ -485,8 +743,8 @@ void GetIntStmt::genIR(IR::BasicBlocks &bBlocks) {
 
     auto [symbol, depth] = SymTab::findInGen(lVal->ident);
     auto var = std::make_unique<IR::Var>(
-            lVal->ident,
-            depth,
+            getStorageName(symbol, lVal->ident),
+            getStorageDepth(symbol, depth),
             symbol->cons,
             symbol->dims,
             symbol->type,
@@ -500,7 +758,7 @@ void GetIntStmt::genIR(IR::BasicBlocks &bBlocks) {
     } else {
         int constOffset;
         std::unique_ptr<Temp> dynamicOffset;
-        bool getNonConstIndex = lVal->getOffset(constOffset, dynamicOffset, bBlocks, symbol->dims);
+        bool getNonConstIndex = lVal->getOffset(constOffset, dynamicOffset, bBlocks, symbol->dims, symbol->type);
         if (getNonConstIndex) {
             bBlocks.back()->addInst(Inst(IR::Op::StoreDynamic,
                                          std::move(rValue),
@@ -531,8 +789,8 @@ void AssignStmt::genIR(IR::BasicBlocks &bBlocks) {
 
     auto [symbol, depth] = SymTab::findInGen(lVal->ident);
     auto var = std::make_unique<IR::Var>(
-            lVal->ident,
-            depth,
+            getStorageName(symbol, lVal->ident),
+            getStorageDepth(symbol, depth),
             symbol->cons,
             symbol->dims,
             symbol->type,
@@ -546,7 +804,7 @@ void AssignStmt::genIR(IR::BasicBlocks &bBlocks) {
     } else {
         int constOffset;
         std::unique_ptr<Temp> dynamicOffset;
-        bool getNonConstIndex = lVal->getOffset(constOffset, dynamicOffset, bBlocks, symbol->dims);
+        bool getNonConstIndex = lVal->getOffset(constOffset, dynamicOffset, bBlocks, symbol->dims, symbol->type);
         if (getNonConstIndex) {
             bBlocks.back()->addInst(Inst(IR::Op::StoreDynamic,
                                          std::move(rValue),

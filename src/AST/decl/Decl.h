@@ -23,6 +23,7 @@ struct Btype {
 // VarDecl → BType VarDef { ',' VarDef } ';'
 struct Decl : public BlockItem {
     bool cons;
+    bool statik{false};
 
     std::unique_ptr<Btype> btype;
     std::vector<std::unique_ptr<Def>> defs;

@@ -11,9 +11,10 @@
 
 using namespace Parser;
 
-std::unique_ptr<Def> Def::parse(bool cons, Type type) {
+std::unique_ptr<Def> Def::parse(bool cons, Type type, bool statik) {
     auto n = std::make_unique<Def>();
     n->cons = cons;
+    n->statik = statik;
 
     int row = Lexer::curRow;
     n->ident = Ident::parse();
@@ -40,18 +41,35 @@ std::unique_ptr<Def> Def::parse(bool cons, Type type) {
         n->initVal = InitVal::parse(cons);
     }
 
-    if (cons || SymTab::cur->getDepth() == 0) {
+    std::string storageName;
+    if (statik) {
+        static int staticId = 0;
+        storageName = "__static_" + n->ident + "_" + std::to_string(staticId++);
+    }
+
+    if (cons || statik || SymTab::cur->getDepth() == 0) {
+        int size = 1;
+        for (auto &i: dims) {
+            size *= i;
+        }
         if (n->initVal) {
-            SymTab::add(n->ident, Symbol(n->cons, type, dims, n->initVal->evaluate()));
-        } else {
-            int size = 1;
-            for (auto &i: dims) {
-                size *= i;
+            auto values = n->initVal->evaluate();
+            if (values.size() < size) {
+                values.resize(size, 0);
+            } else if (values.size() > size) {
+                values.resize(size);
             }
-            SymTab::add(n->ident, Symbol(n->cons, type, dims, std::vector<int>(size)));
+            if (type == Type::Char) {
+                for (auto &value: values) {
+                    value &= 0xFF;
+                }
+            }
+            SymTab::add(n->ident, Symbol(n->cons, type, dims, values, n->statik, storageName));
+        } else {
+            SymTab::add(n->ident, Symbol(n->cons, type, dims, std::vector<int>(size), n->statik, storageName));
         }
     } else {
-        SymTab::add(n->ident, Symbol(n->cons, type, dims, {}));
+        SymTab::add(n->ident, Symbol(n->cons, type, dims, {}, n->statik));
     }
 
     if (cons) {
@@ -66,12 +84,17 @@ void Def::genIR(IR::BasicBlocks &bBlocks, Type type) const {
     using namespace IR;
 
     auto var = std::make_unique<Var>(
-            ident,
-            SymTab::cur->getDepth(),
+            getStorageName(SymTab::find(ident), ident),
+            getStorageDepth(SymTab::find(ident), SymTab::cur->getDepth()),
             cons,
             SymTab::find(ident)->dims,
             type);
     auto pVar = var.get();
+
+    SymTab::knownVars.back().emplace(ident, SymTab::cur->getDepth());
+    if (statik) {
+        return;
+    }
 
     auto size = std::make_unique<ConstVal>(getArraySize(), Type::Int);
     bBlocks.back()->addInst(Inst(
@@ -79,8 +102,6 @@ void Def::genIR(IR::BasicBlocks &bBlocks, Type type) const {
             nullptr,
             std::move(var),
             std::move(size)));
-
-    SymTab::knownVars.back().emplace(ident, SymTab::cur->getDepth());
 
     if (initVal) {
         if (dims.empty()) {

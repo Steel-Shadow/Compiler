@@ -76,8 +76,11 @@ enum class Op {
 
     // res[Var] = getint()
     GetInt,
+    GetChar,
+    GetString,
     // arg1[Temp]
     PrintInt,
+    PrintChar,
     // arg1[Label]
     PrintStr,
 
@@ -231,6 +234,7 @@ public:
 // opt: const GlobVar can be simplified to ConstVal
 struct GlobVar {
     bool cons; // const | var
+    Type type;
     std::vector<int> dims; // At most 2 dimensions in our work.
 
     // filled with 0 if not initialized
@@ -238,9 +242,9 @@ struct GlobVar {
 
     // the teaching team guarantees that
     // "whenever an array initialization exists, a value must be assigned to each array member."
-    GlobVar(bool cons, std::vector<int> dims, std::vector<int> initVal);
+    GlobVar(bool cons, Type type, std::vector<int> dims, std::vector<int> initVal);
 
-    GlobVar(bool cons, const std::vector<int> &dims);
+    GlobVar(bool cons, Type type, const std::vector<int> &dims);
 };
 
 // only one module in our work

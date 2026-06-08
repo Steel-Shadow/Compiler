@@ -15,6 +15,8 @@ std::string toString(LexType type) {
             return "IDENFR";
         case LexType::INTCON:
             return "INTCON";
+        case LexType::CHARCON:
+            return "CHRCON";
         case LexType::STRCON:
             return "STRCON";
         case LexType::MAINTK:
@@ -23,6 +25,10 @@ std::string toString(LexType type) {
             return "CONSTTK";
         case LexType::INTTK:
             return "INTTK";
+        case LexType::CHARTK:
+            return "CHARTK";
+        case LexType::STATICTK:
+            return "STATICTK";
         case LexType::BREAKTK:
             return "BREAKTK";
         case LexType::CONTINUETK:
@@ -31,6 +37,14 @@ std::string toString(LexType type) {
             return "IFTK";
         case LexType::ELSETK:
             return "ELSETK";
+        case LexType::WHILETK:
+            return "WHILETK";
+        case LexType::SWITCHTK:
+            return "SWITCHTK";
+        case LexType::CASETK:
+            return "CASETK";
+        case LexType::DEFAULTTK:
+            return "DEFAULTTK";
         case LexType::AND:
             return "AND";
         case LexType::OR:
@@ -75,6 +89,8 @@ std::string toString(LexType type) {
             return "SEMICN";
         case LexType::COMMA:
             return "COMMA";
+        case LexType::COLON:
+            return "COLON";
         case LexType::LPARENT:
             return "LPARENT";
         case LexType::RPARENT:

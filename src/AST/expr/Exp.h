@@ -53,7 +53,7 @@ struct LVal : public PrimaryExp {
     int evaluate() override;
 
     // return whether getNonConstIndex in LVal's indexes
-    bool getOffset(int &constOffset, std::unique_ptr<IR::Temp> &dynamicOffset, IR::BasicBlocks &bBlocks, const std::vector<int> &symDims) const;
+    bool getOffset(int &constOffset, std::unique_ptr<IR::Temp> &dynamicOffset, IR::BasicBlocks &bBlocks, const std::vector<int> &symDims, Type type = Type::Int) const;
 
     Type getType() override;
 };
@@ -97,6 +97,18 @@ struct FuncCall : public BaseUnaryExp {
     Type getType() override;
 };
 
+// '(' BType ')' UnaryExp
+struct CastExp : public BaseUnaryExp {
+    Type targetType;
+    std::unique_ptr<UnaryExp> unaryExp;
+
+    static std::unique_ptr<CastExp> parse();
+
+    int evaluate() override;
+    std::unique_ptr<IR::Temp> genIR(IR::BasicBlocks &bBlocks) override;
+    Type getType() override;
+};
+
 struct PareExp : public PrimaryExp {
     // '(' Exp ')'
     std::unique_ptr<Exp> exp;
@@ -112,6 +124,7 @@ struct PareExp : public PrimaryExp {
 // Number → IntConst
 struct Number : public PrimaryExp {
     int intConst{};
+    Type type{Type::Int};
 
     static std::unique_ptr<Number> parse();
 
@@ -135,7 +148,12 @@ struct MultiExp {
         auto lastRes = first->genIR(bBlocks);
         for (int i = 0; i < ops.size(); i++) {
             auto t = elements[i]->genIR(bBlocks);
-            auto res = std::make_unique<Temp>(Type::Int); // mix t.type & lastRes.type
+            Type resultType = ptrToValue(lastRes->type);
+            if (ops[i] == LexType::LSS || ops[i] == LexType::GRE || ops[i] == LexType::LEQ || ops[i] == LexType::GEQ
+                || ops[i] == LexType::EQL || ops[i] == LexType::NEQ || ops[i] == LexType::AND || ops[i] == LexType::OR) {
+                resultType = Type::Int;
+            }
+            auto res = std::make_unique<Temp>(resultType);
             bBlocks.back()->addInst(Inst(
                     LexTypeToIROp(ops[i]),
                     std::make_unique<Temp>(*res),
@@ -176,6 +194,11 @@ struct MultiExp {
                 Error::raise("Not same Type in Exp");
                 return Type::Void;
             }
+        }
+        if (!ops.empty()
+            && (ops.back() == LexType::LSS || ops.back() == LexType::GRE || ops.back() == LexType::LEQ || ops.back() == LexType::GEQ
+                || ops.back() == LexType::EQL || ops.back() == LexType::NEQ || ops.back() == LexType::AND || ops.back() == LexType::OR)) {
+            return Type::Int;
         }
         return type;
     }

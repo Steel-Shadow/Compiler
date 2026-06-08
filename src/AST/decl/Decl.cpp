@@ -18,17 +18,21 @@ std::unique_ptr<Decl> Decl::parse() {
         n->cons = true;
     } else {
         n->cons = false;
+        if (Lexer::curLexType == LexType::STATICTK) {
+            Lexer::next();
+            n->statik = true;
+        }
     }
 
     n->btype = Btype::parse();
 
     int row = Lexer::curRow;
-    n->defs.push_back(Def::parse(n->cons, toType(n->btype->type)));
+    n->defs.push_back(Def::parse(n->cons, toType(n->btype->type), n->statik));
 
     while (Lexer::curLexType == LexType::COMMA) {
         Lexer::next();
         row = Lexer::curRow;
-        n->defs.push_back(Def::parse(n->cons, toType(n->btype->type)));
+        n->defs.push_back(Def::parse(n->cons, toType(n->btype->type), n->statik));
     }
 
     singleLex(LexType::SEMICN, row);
@@ -65,8 +69,12 @@ int Def::getArraySize() const {
 std::unique_ptr<Btype> Btype::parse() {
     auto n = std::make_unique<Btype>();
 
-    singleLex(LexType::INTTK);
-    n->type = LexType::INTTK;
+    if (Lexer::curLexType == LexType::INTTK || Lexer::curLexType == LexType::CHARTK) {
+        n->type = Lexer::curLexType;
+        Lexer::next();
+    } else {
+        Error::raise();
+    }
     //    output(AST::Btype);
     return n;
 }
