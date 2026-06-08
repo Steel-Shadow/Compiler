@@ -10,6 +10,10 @@
 
 using namespace Parser;
 
+bool canStartFuncFParam(LexType type) {
+    return type == LexType::INTTK || type == LexType::CHARTK;
+}
+
 // const array can't be param
 std::unique_ptr<FuncDef> FuncDef::parse() {
     auto n = std::make_unique<FuncDef>();
@@ -27,7 +31,7 @@ std::unique_ptr<FuncDef> FuncDef::parse() {
     std::vector<Param> params{};
 
     singleLex(LexType::LPARENT);
-    if (Lexer::curLexType != LexType::RPARENT) {
+    if (canStartFuncFParam(Lexer::curLexType)) {
         n->funcFParams = FuncFParams::parse();
         params = n->funcFParams->getParameters();
     }

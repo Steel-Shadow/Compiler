@@ -12,12 +12,13 @@ void Parser::singleLex(LexType type, int row) {
     if (Lexer::curLexType == type) {
         Lexer::next();
     } else {
+        int errorRow = Lexer::lastRow > 0 ? Lexer::lastRow : row;
         if (type == LexType::SEMICN) {
-            Error::raise('i', row);
+            Error::raise('i', errorRow);
         } else if (type == LexType::RPARENT) {
-            Error::raise('j', row);
+            Error::raise('j', errorRow);
         } else if (type == LexType::RBRACK) {
-            Error::raise('k', row);
+            Error::raise('k', errorRow);
         } else {
             Error::raise(std::string("Miss singleLex ") + toString(type));
         }

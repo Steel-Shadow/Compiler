@@ -8,6 +8,7 @@
 #include "errorHandler/Error.h"
 #include "frontend/lexer/LexType.h"
 #include "frontend/symTab/Symbol.h"
+#include "frontend/symTab/SymTab.h"
 #include "middle/IR.h"
 
 
@@ -186,14 +187,32 @@ struct MultiExp {
     }
 
     Type getType() {
-        Type type = first->getType();
-        for (int i = 0; i < elements.size(); i++) {
-            if (ptrToValue(elements[i]->getType()) != ptrToValue(type)) {
-                // Type check here is too simple
-                // func(t[2]+arr[0]);
-                Error::raise("Not same Type in Exp");
-                return Type::Void;
+        auto remainingRank = [](const auto *exp) -> size_t {
+            auto lVal = exp->getLVal();
+            if (!lVal) {
+                return 0;
             }
+            auto sym = SymTab::find(lVal->getIdent());
+            if (!sym || sym->symType == SymType::Func || sym->dims.size() <= lVal->getRank()) {
+                return 0;
+            }
+            return sym->dims.size() - lVal->getRank();
+        };
+
+        Type type = first->getType();
+        bool typeMismatch = false;
+        for (int i = 0; i < elements.size(); i++) {
+            Type elementType = elements[i]->getType();
+            if (remainingRank(first.get()) > 0 || remainingRank(elements[i].get()) > 0
+                || type == Type::Void || elementType == Type::Void
+                || isPtrType(type) || isPtrType(elementType)
+                || elementType != type) {
+                typeMismatch = true;
+            }
+        }
+        if (typeMismatch) {
+            Error::raise('e');
+            return Type::Void;
         }
         if (!ops.empty()
             && (ops.back() == LexType::LSS || ops.back() == LexType::GRE || ops.back() == LexType::LEQ || ops.back() == LexType::GEQ

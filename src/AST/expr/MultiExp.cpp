@@ -10,6 +10,7 @@ std::unique_ptr<Cond> Cond::parse() {
     auto n = std::make_unique<Cond>();
 
     n->lorExp = LOrExp::parse();
+    n->lorExp->getType();
 
     output(AST::Cond);
     return n;
@@ -37,14 +38,26 @@ std::unique_ptr<MulExp> MulExp::parse() {
 
 int MulExp::evaluate() const {
     int val = first->evaluate();
+    if (Exp::getNonConstValueInEvaluate) {
+        return 0;
+    }
     for (int i = 0; i < ops.size(); ++i) {
         auto op = ops[i];
         auto e = elements[i]->evaluate();
+        if (Exp::getNonConstValueInEvaluate) {
+            return 0;
+        }
         if (op == LexType::MULT) {
             val *= e;
         } else if (op == LexType::DIV) {
+            if (e == 0) {
+                return 0;
+            }
             val /= e;
         } else if (op == LexType::MOD) {
+            if (e == 0) {
+                return 0;
+            }
             val %= e;
         }
     }
@@ -69,9 +82,15 @@ std::unique_ptr<AddExp> AddExp::parse() {
 
 int AddExp::evaluate() const {
     int val = first->evaluate();
+    if (Exp::getNonConstValueInEvaluate) {
+        return 0;
+    }
     for (int i = 0; i < ops.size(); ++i) {
         auto op = ops[i];
         auto e = elements[i]->evaluate();
+        if (Exp::getNonConstValueInEvaluate) {
+            return 0;
+        }
         if (op == LexType::PLUS) {
             val += e;
         } else if (op == LexType::MINU) {

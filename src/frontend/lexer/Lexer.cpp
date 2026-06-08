@@ -23,6 +23,7 @@ int Lexer::column[deep]; // count from 1
 int Lexer::row[deep]; // count from 1.
 // ReSharper disable once CppRedundantQualifier
 int &Lexer::curRow = Lexer::row[0];
+int Lexer::lastRow = 1;
 
 char c; // c = fileContents[posTemp - 1]
 int posTemp;
@@ -264,6 +265,9 @@ void output() {
 
 void updateWords(LexType l, Token t) {
     using namespace Lexer;
+    if (words[0].first != LexType::LEX_EMPTY && words[0].first != LexType::LEX_END) {
+        lastRow = row[0];
+    }
     for (int i = 0; i < deep - 1; ++i) {
         words[i] = words[i + 1];
         pos[i] = pos[i + 1];
@@ -284,6 +288,9 @@ void updateWords(LexType l, Token t) {
 bool Lexer::findAssignBeforeSemicolon() {
     for (int t = pos[0] - 1;
          t < fileContents.length() && fileContents[t] != ';'; ++t) {
+        if (fileContents[t] == '\n') {
+            return false;
+        }
         if (fileContents[t] == '=') {
             return true;
         }
@@ -293,6 +300,7 @@ bool Lexer::findAssignBeforeSemicolon() {
 
 void Lexer::init(const std::string &inFile, const std::string &outFile) {
     buildReserveWords();
+    lastRow = 1;
 
     auto inFileStream = std::ifstream(inFile);
     if (!inFileStream) {

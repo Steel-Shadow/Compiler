@@ -35,11 +35,27 @@ int decodeCharConst(const std::string &token) {
     return token.size() >= 3 ? static_cast<unsigned char>(token[1]) : 0;
 }
 
+bool canStartExp(LexType type) {
+    switch (type) {
+        case LexType::PLUS:
+        case LexType::MINU:
+        case LexType::NOT:
+        case LexType::LPARENT:
+        case LexType::INTCON:
+        case LexType::CHARCON:
+        case LexType::IDENFR:
+            return true;
+        default:
+            return false;
+    }
+}
+
 std::unique_ptr<LVal> LVal::parse() {
     auto n = std::make_unique<LVal>();
 
     n->ident = Ident::parse();
-    if (!SymTab::find(n->ident)) {
+    Symbol *symbol = SymTab::find(n->ident);
+    if (!symbol) {
         Error::raise('c');
     }
 
@@ -48,6 +64,9 @@ std::unique_ptr<LVal> LVal::parse() {
         int row = Lexer::curRow;
         auto index = Exp::parse(false);
         if (index->getType() != Type::Int) {
+            Error::raise('e', row);
+        }
+        if (symbol && (symbol->symType == SymType::Func || n->dims.size() + 1 > symbol->dims.size())) {
             Error::raise('e', row);
         }
         n->dims.push_back(std::move(index));
@@ -224,7 +243,16 @@ bool LVal::getOffset(int &constOffset, std::unique_ptr<IR::Temp> &dynamicOffset,
 
 Type LVal::getType() {
     auto sym = SymTab::find(ident);
-    return sym ? sym->type : Type::Void;
+    if (!sym) {
+        return Type::Void;
+    }
+    if (sym->symType == SymType::Func) {
+        return Type::Void;
+    }
+    if (isPtrType(sym->type) && !dims.empty()) {
+        return ptrToValue(sym->type);
+    }
+    return sym->type;
 }
 
 std::unique_ptr<PrimaryExp> PrimaryExp::parse() {
@@ -459,15 +487,17 @@ std::unique_ptr<FuncCall> FuncCall::parse() {
     Symbol *funcSym = SymTab::find(n->ident);
     if (!funcSym) {
         Error::raise('c', row);
+    } else if (funcSym->symType != SymType::Func) {
+        Error::raise('e', row);
     }
 
     singleLex(LexType::LPARENT);
 
-    if (Lexer::curLexType != LexType::RPARENT) {
+    if (canStartExp(Lexer::curLexType)) {
         n->funcRParams = FuncRParams::parse();
     }
 
-    if (funcSym) {
+    if (funcSym && funcSym->symType == SymType::Func) {
         checkParams(n, row, funcSym); // SymTab error handle
     }
 
@@ -679,7 +709,11 @@ std::unique_ptr<IR::Temp> FuncCall::genIR(IR::BasicBlocks &bBlocks) {
 }
 
 Type FuncCall::getType() {
-    return SymTab::find(ident)->type;
+    auto sym = SymTab::find(ident);
+    if (!sym || sym->symType != SymType::Func) {
+        return Type::Void;
+    }
+    return sym->type;
 }
 
 const std::string &FuncCall::getIdent() const {

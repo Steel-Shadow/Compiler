@@ -10,8 +10,13 @@
 
 bool Error::hasError = false;
 std::ofstream Error::errorFileStream;
+std::set<std::pair<int, char>> Error::raisedErrors;
 
 void Error::raise(char code, int row) {
+    auto [_, inserted] = raisedErrors.emplace(row, code);
+    if (!inserted) {
+        return;
+    }
     hasError = true;
 #ifdef STDOUT_ERROR
     std::cout << row << " " << code << '\n';
@@ -27,10 +32,6 @@ void Error::raise(const std::string &mes) {
 #ifdef STDOUT_ERROR
     std::cout << "error: " << mes << " "
               << "---------------------------------------\n";
-#endif
-#ifdef FILEOUT_ERROR
-    errorFileStream << "error: " << mes << " "
-                    << "---------------------------------------\n";
 #endif
     // exit(-1);
 }

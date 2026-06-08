@@ -28,6 +28,7 @@ extern int pos[deep]; // count from 1
 extern int column[deep]; // count from 1
 extern int row[deep]; // count from 1
 extern int &curRow; // row[0]
+extern int lastRow;
 
 Word peek(int n = 0);
 

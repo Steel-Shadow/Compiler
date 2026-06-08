@@ -17,9 +17,11 @@ std::unique_ptr<Def> Def::parse(bool cons, Type type, bool statik) {
     n->statik = statik;
 
     int row = Lexer::curRow;
+    int defRow = row;
     n->ident = Ident::parse();
 
-    if (SymTab::reDefine(n->ident)) {
+    bool redefined = SymTab::reDefine(n->ident);
+    if (redefined) {
         Error::raise('b', row);
     }
 
@@ -36,22 +38,52 @@ std::unique_ptr<Def> Def::parse(bool cons, Type type, bool statik) {
         singleLex(LexType::RBRACK, row);
     }
 
+    std::string storageName;
+    if (statik && !redefined) {
+        static int staticId = 0;
+        storageName = "__static_" + n->ident + "_" + std::to_string(staticId++);
+    }
+
+    int size = 1;
+    for (auto &i: dims) {
+        size *= i;
+    }
+
+    Symbol *declaredSymbol = nullptr;
+    if (!redefined) {
+        SymTab::add(n->ident, Symbol(n->cons, type, dims, std::vector<int>(size), n->statik, storageName));
+        declaredSymbol = SymTab::find(n->ident);
+    }
+
     if (cons || Lexer::curLexType == LexType::ASSIGN) {
         Lexer::next();
         n->initVal = InitVal::parse(cons);
     }
 
-    std::string storageName;
-    if (statik) {
-        static int staticId = 0;
-        storageName = "__static_" + n->ident + "_" + std::to_string(staticId++);
+    if (n->initVal) {
+        if (dims.empty()) {
+            if (auto expInit = dynamic_cast<ExpInitVal *>(n->initVal.get())) {
+                if (expInit->exp->getType() != type) {
+                    Error::raise('e', defRow);
+                }
+            } else {
+                Error::raise('e', defRow);
+            }
+        } else if (auto array = dynamic_cast<ArrayInitVal *>(n->initVal.get())) {
+            for (auto &expInit: array->getFlatten()) {
+                if (expInit->exp->getType() != type) {
+                    Error::raise('e', defRow);
+                    break;
+                }
+            }
+        } else if (dynamic_cast<StringInitVal *>(n->initVal.get())) {
+            if (type != Type::Char) {
+                Error::raise('e', defRow);
+            }
+        }
     }
 
-    if (cons || statik || SymTab::cur->getDepth() == 0) {
-        int size = 1;
-        for (auto &i: dims) {
-            size *= i;
-        }
+    if (declaredSymbol && (cons || statik || SymTab::cur->getDepth() == 0)) {
         if (n->initVal) {
             auto values = n->initVal->evaluate();
             if (values.size() < size) {
@@ -64,12 +96,12 @@ std::unique_ptr<Def> Def::parse(bool cons, Type type, bool statik) {
                     value &= 0xFF;
                 }
             }
-            SymTab::add(n->ident, Symbol(n->cons, type, dims, values, n->statik, storageName));
+            *declaredSymbol = Symbol(n->cons, type, dims, values, n->statik, storageName);
         } else {
-            SymTab::add(n->ident, Symbol(n->cons, type, dims, std::vector<int>(size), n->statik, storageName));
+            *declaredSymbol = Symbol(n->cons, type, dims, std::vector<int>(size), n->statik, storageName);
         }
-    } else {
-        SymTab::add(n->ident, Symbol(n->cons, type, dims, {}, n->statik));
+    } else if (declaredSymbol) {
+        *declaredSymbol = Symbol(n->cons, type, dims, {}, n->statik);
     }
 
     if (cons) {
@@ -115,17 +147,46 @@ void Def::genIR(IR::BasicBlocks &bBlocks, Type type) const {
                     std::make_unique<Var>(*pVar),
                     nullptr));
         } else {
-            // array init
-            auto array = dynamic_cast<ArrayInitVal *>(initVal.get());
-
-            int index = 0;
-            for (auto &expInit: array->getFlatten()) {
-                auto value = expInit->exp->genIR(bBlocks);
+            auto storeImmediate = [&](int value, int index) {
+                if (type == Type::Char) {
+                    value &= 0xFF;
+                }
+                auto temp = std::make_unique<Temp>(type);
+                bBlocks.back()->addInst(Inst(
+                        Op::LoadImd,
+                        std::make_unique<Temp>(*temp),
+                        std::make_unique<ConstVal>(value, type),
+                        nullptr));
                 bBlocks.back()->addInst(Inst(
                         Op::Store,
-                        std::move(value),
+                        std::move(temp),
                         std::make_unique<Var>(*pVar),
-                        std::make_unique<ConstVal>(index++, Type::Int)));
+                        std::make_unique<ConstVal>(index, Type::Int)));
+            };
+
+            // array init
+            int arraySize = getArraySize();
+            int index = 0;
+            if (auto array = dynamic_cast<ArrayInitVal *>(initVal.get())) {
+                for (auto &expInit: array->getFlatten()) {
+                    auto value = expInit->exp->genIR(bBlocks);
+                    bBlocks.back()->addInst(Inst(
+                            Op::Store,
+                            std::move(value),
+                            std::make_unique<Var>(*pVar),
+                            std::make_unique<ConstVal>(index++, Type::Int)));
+                }
+            } else if (auto str = dynamic_cast<StringInitVal *>(initVal.get())) {
+                auto values = str->evaluate();
+                for (int value: values) {
+                    if (index >= arraySize) {
+                        break;
+                    }
+                    storeImmediate(value, index++);
+                }
+            }
+            while (index < arraySize) {
+                storeImmediate(0, index++);
             }
         }
     }

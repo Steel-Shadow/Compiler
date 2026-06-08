@@ -22,13 +22,15 @@ std::unique_ptr<Block> Block::parse() {
 
     singleLex(LexType::LBRACE);
 
-    while (Lexer::curLexType != LexType::RBRACE) {
+    while (Lexer::curLexType != LexType::RBRACE && Lexer::curLexType != LexType::LEX_END) {
         auto i = BlockItem::parse();
         n->blockItems.push_back(std::move(i));
     }
 
     lastRow = Lexer::curRow;
-    Lexer::next(); // }
+    if (Lexer::curLexType == LexType::RBRACE) {
+        Lexer::next(); // }
+    }
 
     output(AST::Block);
     return n;
@@ -526,6 +528,9 @@ std::unique_ptr<ReturnStmt> ReturnStmt::parse() {
     Lexer::next();
 
     if (Lexer::curLexType == LexType::SEMICN) {
+        if (!Stmt::retVoid) {
+            Error::raise('e');
+        }
         Lexer::next();
     } else {
         if (Stmt::retVoid) {
@@ -610,8 +615,21 @@ std::unique_ptr<PrintStmt> PrintStmt::parse() {
         Error::raise('l', row);
     }
     for (int i = 0; i < n->exps.size() && i < n->formatTypes.size(); ++i) {
+        auto remainingRank = [](const std::unique_ptr<Exp> &exp) -> size_t {
+            auto lVal = exp->getLVal();
+            if (!lVal) {
+                return 0;
+            }
+            auto sym = SymTab::find(lVal->getIdent());
+            if (!sym || sym->symType == SymType::Func || sym->dims.size() <= lVal->getRank()) {
+                return 0;
+            }
+            return sym->dims.size() - lVal->getRank();
+        };
+
         Type expType = ptrToValue(n->exps[i]->getType());
-        if ((n->formatTypes[i] == 'd' && expType != Type::Int)
+        if (((n->formatTypes[i] == 'd' || n->formatTypes[i] == 'c') && remainingRank(n->exps[i]) > 0)
+            || (n->formatTypes[i] == 'd' && expType != Type::Int)
             || (n->formatTypes[i] == 'c' && expType != Type::Char)) {
             Error::raise('e', row);
         } else if (n->formatTypes[i] == 's') {
@@ -645,6 +663,43 @@ void PrintStmt::addStr(const IR::BasicBlocks &bBlocks, std::string &buffer) {
 void PrintStmt::genIR(IR::BasicBlocks &bBlocks) {
     using namespace IR;
 
+    struct PrintArg {
+        char format{};
+        std::unique_ptr<Temp> value;
+        std::unique_ptr<Var> var;
+        std::unique_ptr<Element> offset;
+    };
+
+    std::vector<PrintArg> args;
+    args.reserve(formatTypes.size());
+
+    for (int i = 0; i < exps.size() && i < formatTypes.size(); ++i) {
+        PrintArg arg;
+        arg.format = formatTypes[i];
+        if (arg.format == 'd' || arg.format == 'c') {
+            arg.value = exps[i]->genIR(bBlocks);
+        } else if (arg.format == 's') {
+            auto lVal = exps[i]->getLVal();
+            auto [symbol, depth] = SymTab::findInGen(lVal->ident);
+            arg.var = std::make_unique<IR::Var>(
+                    getStorageName(symbol, lVal->ident),
+                    getStorageDepth(symbol, depth),
+                    symbol->cons,
+                    symbol->dims,
+                    symbol->type,
+                    symbol->symType);
+            int constOffset = 0;
+            std::unique_ptr<Temp> dynamicOffset;
+            bool getNonConstIndex = lVal->getOffset(constOffset, dynamicOffset, bBlocks, symbol->dims, symbol->type);
+            if (getNonConstIndex) {
+                arg.offset = std::move(dynamicOffset);
+            } else {
+                arg.offset = std::make_unique<ConstVal>(constOffset, Type::Int);
+            }
+        }
+        args.push_back(std::move(arg));
+    }
+
     // string | %d | %c | %s
     std::string buffer;
     // skip \" in formatString
@@ -654,30 +709,16 @@ void PrintStmt::genIR(IR::BasicBlocks &bBlocks) {
             addStr(bBlocks, buffer);
 
             if (format == 'd' || format == 'c') {
-                auto value = exps[j++]->genIR(bBlocks);
                 bBlocks.back()->addInst(Inst(format == 'd' ? IR::Op::PrintInt : IR::Op::PrintChar,
                                              nullptr,
-                                             std::move(value),
+                                             std::move(args[j++].value),
                                              nullptr));
             } else if (format == 's') {
-                auto lVal = exps[j++]->getLVal();
-                auto [symbol, depth] = SymTab::findInGen(lVal->ident);
-                auto var = std::make_unique<IR::Var>(
-                        getStorageName(symbol, lVal->ident),
-                        getStorageDepth(symbol, depth),
-                        symbol->cons,
-                        symbol->dims,
-                        symbol->type,
-                        symbol->symType);
-                int constOffset = 0;
-                std::unique_ptr<Temp> dynamicOffset;
-                bool getNonConstIndex = lVal->getOffset(constOffset, dynamicOffset, bBlocks, symbol->dims, symbol->type);
+                auto &arg = args[j++];
                 bBlocks.back()->addInst(Inst(IR::Op::PrintStr,
                                              nullptr,
-                                             std::move(var),
-                                             getNonConstIndex
-                                                     ? std::unique_ptr<Element>(std::move(dynamicOffset))
-                                                     : std::unique_ptr<Element>(std::make_unique<ConstVal>(constOffset, Type::Int))));
+                                             std::move(arg.var),
+                                             std::move(arg.offset)));
             }
         } else {
             buffer += formatString[i];
@@ -709,7 +750,20 @@ std::unique_ptr<LValStmt> LValStmt::parse() {
         n = AssignStmt::parse();
         n->lVal = std::move(lVal);
         if (auto assign = dynamic_cast<AssignStmt *>(n.get())) {
+            auto remainingRank = [](const std::unique_ptr<Exp> &exp) -> size_t {
+                auto expLVal = exp->getLVal();
+                if (!expLVal) {
+                    return 0;
+                }
+                auto expSym = SymTab::find(expLVal->getIdent());
+                if (!expSym || expSym->symType == SymType::Func || expSym->dims.size() <= expLVal->getRank()) {
+                    return 0;
+                }
+                return expSym->dims.size() - expLVal->getRank();
+            };
+
             if (sym && (sym->dims.size() != n->lVal->dims.size()
+                        || remainingRank(assign->exp) > 0
                         || ptrToValue(sym->type) != assign->exp->getType())) {
                 Error::raise('e', row);
             }
@@ -778,6 +832,7 @@ std::unique_ptr<AssignStmt> AssignStmt::parse() {
 
     int row = Lexer::curRow;
     n->exp = Exp::parse(false);
+    n->exp->getType();
     singleLex(LexType::SEMICN, row);
 
     return n;
@@ -824,6 +879,7 @@ std::unique_ptr<ExpStmt> ExpStmt::parse() {
 
     int row = Lexer::curRow;
     n->exp = Exp::parse(false);
+    n->exp->getType();
     singleLex(LexType::SEMICN, row);
 
     return n;
