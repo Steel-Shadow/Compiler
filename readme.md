@@ -1,469 +1,406 @@
-# BUAA 2023 编译器设计
+# BUAA 编译器设计文档
 
-本编译器使用 C++17 书写，中间代码为自行设计的四元式，目标代码生成 MIPS。
+本项目是一个使用 C++17 实现的 SysY 编译器。编译器前端完成词法分析、递归下降语法分析、语义检查和抽象语法树构建；中端生成自行设计的四元式 IR；后端将 IR 翻译为可在 Mars 上运行的 MIPS 汇编。
+
+当前实现已经在原有 SysY 子集基础上扩展支持了 2026 测试集涉及的 `char`、类型转换、字符串初始化、`static` 局部变量、`switch`、数组形参、内置 I/O 函数等特性。
 
 ## 目录
 
-- [BUAA 2023 编译器设计](#buaa-2023-编译器设计)
-  - [目录](#目录)
-  - [参考编译器介绍](#参考编译器介绍)
-    - [抽象语法树结构](#抽象语法树结构)
-    - [文件组织](#文件组织)
-  - [总体介绍](#总体介绍)
-    - [总体结构](#总体结构)
-    - [接口设计](#接口设计)
-    - [文件组织](#文件组织-1)
-  - [词法分析器 Lexer](#词法分析器-lexer)
-    - [单例模式](#单例模式)
-    - [预读处理](#预读处理)
-    - [词法类型](#词法类型)
-    - [区分`标识符`和`保留字`](#区分标识符和保留字)
-  - [语法分析器 Parser](#语法分析器-parser)
-  - [抽象语法树 AST](#抽象语法树-ast)
-    - [区分 Exp 和 LVal](#区分-exp-和-lval)
-    - [const](#const)
-  - [符号表 SymTable](#符号表-symtable)
-    - [常值计算](#常值计算)
-    - [符号表作用域](#符号表作用域)
-  - [错误处理 Error Handling](#错误处理-error-handling)
-  - [中间代码 IR](#中间代码-ir)
-    - [数据结构](#数据结构)
-    - [类型系统](#类型系统)
-    - [中间代码生成](#中间代码生成)
-    - [作用域和栈](#作用域和栈)
-    - [寄存器冲突](#寄存器冲突)
-  - [目标代码 MIPS](#目标代码-mips)
-    - [栈内存分配](#栈内存分配)
-    - [临时变量的寄存器/内存分配策略](#临时变量的寄存器内存分配策略)
-    - [函数调用](#函数调用)
-  - [代码优化](#代码优化)
-    - [临时寄存器分配](#临时寄存器分配)
-    - [全局寄存器分配](#全局寄存器分配)
-    - [常量计算](#常量计算)
-    - [后端指令合并](#后端指令合并)
-    - [原地跳转指令消除](#原地跳转指令消除)
+- [整体结构](#整体结构)
+- [构建与运行](#构建与运行)
+- [前端设计](#前端设计)
+- [符号表与语义检查](#符号表与语义检查)
+- [中间代码 IR](#中间代码-ir)
+- [目标代码 MIPS](#目标代码-mips)
+- [错误处理](#错误处理)
+- [测试设计](#测试设计)
+- [优化与取舍](#优化与取舍)
 
-## 参考编译器介绍
+## 整体结构
 
-抽象语法树 AST 设计参照了 `https://github.com/dhy2000/Compiler2021` 。
+编译流程分为三遍：
 
-由于我只参考了该编译器的 AST，这里着重介绍它的 AST 设计。
+1. 词法、语法、语义分析：读取源文件，生成 AST，同时维护符号表并输出错误。
+2. IR 生成：遍历 AST，生成 `IR::Module`、`IR::Function`、`IR::BasicBlock` 和四元式指令。
+3. MIPS 生成：遍历 IR，生成 `.data` 和 `.text` 段汇编。
 
-### 抽象语法树结构
-
-语法树采用多种不同的节点类进行表示。
-为了方便管理编译作业要求的语法分析输出，定义接口 Component 用于输出语法成分。
-
-对于文法的每种非终结符，建立一种语法树节点类，并用属性来存储其组成成分（词语(终结符, 叶节点)和子节点(非终结符, 非叶节点)
-对于组成成分存在 "或|" 关系的非终结符，对其每个具体方向建立类，并让这些类实现同一个接口。
-
-SysY 文法按照不同的逻辑层次进行分类，分别针对每一类依次分析和编码。
-根据语法成分出现的层次，分为：表达式、语句、变量定义、函数定义四大类。
-
-### 文件组织
-
-- 测试
-- 前端
-  - 词法分析
-  - 语法分析
-  - 语义分析
-- 中间代码
-- 后端
+主入口位于 [src/main.cpp](src/main.cpp)，接口形式为：
 
 ```text
-├───autotest                                     
-├───backend                                      
-│   ├───exception
-│   ├───hardware
-│   ├───instruction                              
-│   └───optimize                                 
-├───compiler                                     
-├───exception                                    
-├───frontend                                     
-│   ├───error                                    
-│   ├───input                                    
-│   ├───lexical                                  
-│   │   └───token                                
-│   ├───syntax                                   
-│   │   ├───decl       
-│   │   ├───expr       
-│   │   │   ├───multi  
-│   │   │   └───unary  
-│   │   ├───func       
-│   │   └───stmt       
-│   │       ├───complex
-│   │       └───simple 
-│   └───visitor        
-├───middle
-│   ├───code
-│   ├───operand
-│   ├───optimize
-│   └───symbol
-└───utility
+Compiler.exe <source> <lexer-output> <error-output> <ir-output> <mips-output>
 ```
 
-## 总体介绍
+编译过程如下：
 
-### 总体结构
-
-编译器前端包括词法分析器、语法分析器、符号表、抽象语法树。中端包括中间代码生成。后端包括 MIPS 指令翻译、内存管理、寄存器分配。
-
-词法分析、语法分析和语义分析是同一遍完成的。
-语法分析采用递归下降法，同时进行语义分析，并维护符号表。
-
-符号表填表在语法分析、语义分析阶段完成，符号表信息在中间代码生成中被使用。
-在 MIPS 指令生成中，不再使用符号表，只使用中间代码包含的信息（符号表信息被储存在中间代码中）。
-
-词法分析、语法分析、语义分析都涉及错误处理，会报告出错行以及出错类型。
-除此之外，我还自定义了一些其它错误，方便测试。
-
-语法分析会生成 AST 抽象语法树，对 AST 进行自顶向下进行中间代码生成，产生中间代码的容器 Module。
-
-再对 Module 进行处理，生成 MIPS 汇编指令。
-
-```c++
-CompUnit compUnit = CompUnit::parse(); // 语法分析获取语法树
+```cpp
+auto compUnit = CompUnit::parse();
 if (!Error::hasError) {
-    IR::Module module = compUnit->genIR(); // 中间代码生成
-    MIPS::outputAll(*module); // MIPS 代码输出
+    auto module = compUnit->genIR();
+    module->outputIR();
+    MIPS::genMIPS(*module);
 }
 ```
 
-### 接口设计
+如果前端发现错误，只输出 `error.txt`，不进入 IR 和 MIPS 生成阶段。
 
-词法分析器提供接口返回下一个词，包含词法类型和具体字符串，被语法分析器调用。
-
-语法分析的具体解析 parse 方法分布在各个抽象语法树节点类中，用于建立 AST。
-
-AST 根节点 CompUnit 包含生成中间代码容器 Module 的方法。
-
-编译器后端解析 Module 来生成 MIPS 汇编程序。
-
-### 文件组织
-
-编译器源代码文件组织如下：
-主要可分为前端(词法分析、语法分析、符号表)、语法树、中间代码、后端 MIPS、错误处理。
-
-其它文件包括有：
-tools 内的辅助函数，main.cpp 入口，config.h 方便设置版本，Cmake 工程文件，结合 mars.jar 的测试脚本。
+源码组织：
 
 ```text
-├───frontend                              
-│   ├───lexer
-│   ├───parser
-│   └───symTab
-├───AST                                   
-│   ├───decl                              
-│   ├───expr                              
-│   ├───func                              
-│   └───stmt                              
-├───middle
-├───backend                               
-├───errorHandler                          
-└───tools
+src/
+  AST/              抽象语法树节点、语义检查、IR 生成
+    decl/           声明和初始化
+    expr/           表达式、LVal、函数调用
+    func/           函数定义和形参/实参
+    stmt/           语句、控制流、printf
+  frontend/
+    lexer/          词法分析
+    parser/         递归下降公共工具
+    symTab/         符号表和类型系统
+  middle/           IR 数据结构和输出
+  backend/          MIPS 指令、寄存器、栈内存管理
+  errorHandler/     错误记录和输出
 ```
 
-## 词法分析器 Lexer
+## 构建与运行
 
-### 单例模式
+项目使用 CMake 构建，输出文件为 `bin/Compiler.exe`。
 
-原设计仿照 java 实现`单例模式`。后修改使用 namespace 实现单例效果，更简洁方便。
-
-Lexer Parser 均使用 namespace 实现单例效果，仅向外暴露必要接口
-(CppCoreGuidelines 不建议使用单例设计模式，冗余复杂不如namespace一步到位)
-
-### 预读处理
-
-Lexer 无需为 Parser的 `预读处理`额外扫描。
-
-Lexer 应当领先 Parser 若干个单词(具体领先数量依据设计而定，单词信息均存储于 Lexer 内部)。
-
-Lexer 共存储 3 个单词(便于 Parser 预读分析，具体深度在 Parser 设计中确定)，分别记录每个单词的位置数据(错误处理)。
-
-在读取新单词时，依次更新各个单词信息。
-
-由此优化， Lexer 仅会扫描全文一遍，预读不会影响性能。
-
-### 词法类型
-
-之前的 Lexer 为了方便输出，直接将词法类型（终结符） `LexType` 定义为 `string`。  
-开发 Parser 考虑建造语法树时，如果使用 `string` 作为节点标识符，效率太低。
-后现将 LexType（终结符） 和 AST（非终结符） 重构为枚举类。
-
-### 区分`标识符`和`保留字`
-
-为了简化代码实现，我借鉴了讨论区同学的 `LinkedHashMap`。
-只需将保留字加入上述 map 中，在区分时依次判断即可，无需实现状态机区分保留字。
-CPP 标准库没有 JAVA 的 LinkedHashMap，我使用模板类实现(仅功能实现，未优化效率)。
-
-## 语法分析器 Parser
-
-语法分析部分的编码前后设计详见章节`抽象语法树 AST`
-
-语法分析器的实现：各个 AST 节点有各自的语法分析方法，在相应节点类内部作为类方法存在，方法返回语法树节点指针。
-
-```c++
-struct CompUnit {
-    // ...
-    static std::unique_ptr<CompUnit> parse();
-    // ...
-}
+```powershell
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
 ```
 
-Parser 作为一个命名空间，只包含了语法分析阶段各个节点解析都需要的公用方法：解析单个终结符、输出语法信息。
+默认运行方式：
 
-## 抽象语法树 AST
+```powershell
+.\bin\Compiler.exe testfile.txt lexer.txt error.txt ir.txt mips.txt
+```
 
-原设计：AST 的节点均为一个类，该类成员属性包含 `NodeType` 用以区分不同节点。
-使用映射表`<Node* , 具体属性>`表示结点的属性信息
-(如果在节点内部直接存储信息，每个节点都要包含所有可能的信息，浪费内存)。
+调试输出由 [src/config.h](src/config.h) 控制。Release 默认输出错误和 MIPS；Debug 下可以额外打开 IR、词法、语法或 stdout 输出。
 
-上述设计是可行的，但是每次访问属性都要访问指针，破坏了缓存连续性，代码运行效率低，不优雅。
+## 前端设计
 
-修改后的设计：
-在阅读了往届同学和 Clang 源代码后，我决定重构 AST，为每个非终结符设置一个类。
+### Lexer
 
-对于规则中的“|”，我将右侧的每个选项建立新的类，并使右侧的每个选项对应的语法树类继承左侧非终结符对应的类。
+词法分析器使用 `Lexer` namespace 实现单例式状态管理。它维护 3 个 token 的预读窗口：
+
+- `curLexType` / `curToken` 表示当前 token。
+- `peek(n)` 提供向前预读能力。
+- `row[]` 保存 token 行号。
+- `lastRow` 保存最近已消费 token 的行号，用于缺失 `;`、`)`、`]` 时按前一个 token 所在行报错。
+
+保留字和运算符通过 `LinkedHashMap` 顺序匹配。这样可以正确区分 `&&` / `&`、`||` / `|`、`<=` / `<` 等多字符和单字符 token。
+
+语句解析中需要区分：
 
 ```text
-PrimaryExp → '(' Exp ')' | LVal | Number
-
-struct LVal : public PrimaryExp {..}
+LVal = Exp ;
+Exp ;
 ```
 
-节点类包含本身的信息，以及子语法树节点的指针。
+实现上通过 `findAssignBeforeSemicolon()` 判断当前行到分号前是否存在赋值号。为了错误恢复稳定，该扫描遇到换行即停止，避免把下一行赋值误判为当前表达式语句。
 
-多个节点类间使用继承降低复杂度、复用代码，类继承关系图(Visual Studio生成类图)如下所示。
+### Parser
 
-![ClassDiagram.png](doc/ClassDiagram.png)
+语法分析采用递归下降。公共函数位于 `Parser` namespace：
 
-### 区分 Exp 和 LVal
+- `singleLex(type)`：匹配一个终结符，并在缺失 `;`、`)`、`]` 时上报 `i/j/k`。
+- `output(AST)`：按课程要求输出语法成分。
 
-在 Stmt 解析中，区分 Exp 和 LVal 相对复杂，我通过在分号前寻找`=`赋值符号进行区分。
+具体的文法解析方法分散在 AST 节点中，例如：
 
-### const
+```cpp
+std::unique_ptr<CompUnit> CompUnit::parse();
+std::unique_ptr<Stmt> Stmt::parse();
+std::unique_ptr<AddExp> AddExp::parse();
+```
 
-我的节点中，将 `cons` 作为 Exp InitVal 的属性，解析时需要向下传递 `cons`。
+这样可以把“文法结构、语义动作、IR 生成”放在同一个语法节点附近，减少额外 visitor 带来的类型分发。
+
+### AST
+
+AST 按语法类别拆分为声明、表达式、函数、语句四组。节点使用 `std::unique_ptr` 持有子树。
+
+表达式节点提供以下核心能力：
+
+- `evaluate()`：编译期常量求值。
+- `getType()`：语义类型推导。
+- `getRank()` / `getLVal()`：判断数组维度、数组实参与左值。
+- `genIR()`：生成表达式结果对应的 `IR::Temp`。
+
+数组和指针语义集中在 `LVal`：
+
+- 普通局部/全局数组按基址加偏移访问。
+- 数组形参本质上是指针，先从形参槽位取出地址，再访问元素。
+- `getOffset()` 同时支持常量偏移和动态偏移；动态表达式中如果遇到非 const 值，会停止编译期常量计算，避免把运行期变量当 0 后触发除零。
+
+### 语句与控制流
+
+语句节点继承 `BlockItem`，并重载 `genIR()`。
+
+控制流主要使用 basic block 和 label：
+
+- `if` 生成 true/false/end block。
+- `while` 生成 cond/body/end block。
+- `for` 生成 body/iter/end block。
+- `switch` 将 switch 表达式保存到临时栈变量，再逐个比较 case，支持 fallthrough 和 default。
+
+`break` 和 `continue` 使用栈维护当前控制流目标：
+
+```cpp
+ControlFlow::breakLabels
+ControlFlow::continueLabels
+```
+
+`printf` 生成 IR 时先求值所有格式参数，再输出字符串片段和参数值。这样可以正确处理：
+
+```c
+printf("result %d\n", foo(bar()));
+```
+
+其中 `bar()`、`foo()` 的副作用应发生在打印 `"result "` 之前。
+
+## 符号表与语义检查
+
+符号表是树形结构。语法和语义分析阶段通过 `deepIn()` / `deepOut()` 进入和离开作用域；IR 生成阶段通过 `iterIn()` / `iterOut()` 重新遍历已构建的符号表树。
+
+`Symbol` 记录：
+
+- 符号类别：变量、函数、形参。
+- 基本类型：`Void`、`Int`、`Char`、`IntPtr`、`CharPtr`。
+- `const`、`static` 标记。
+- 数组维度和初始值。
+- 函数形参列表。
+- static 局部变量的全局存储名。
+
+内置函数在编译单元解析开始前加入全局符号表：
 
 ```text
-Exp → AddExp
-ConstExp → AddExp
+get_int() -> int
+get_char() -> char
+get_string(char[], int) -> void
+put_int(int) -> void
+put_char(char) -> void
+put_string(char[]) -> void
+put_str(char[]) -> void
 ```
 
-文法规定中，没有区分 Exp ConstExp(AST 中，ConstExp 下的节点不为 const)，额外添加语义约束。
+语义检查覆盖：
 
-在后续语义分析时需要注意。
+- 重定义、未定义、函数参数数量和类型。
+- `const` 赋值。
+- `break` / `continue` 所在上下文。
+- 非 void 函数缺少返回值。
+- void 函数返回表达式、非 void 函数 `return;`。
+- 标量、数组、函数在表达式和下标中的误用。
+- `printf` 格式串数量和类型匹配。
+- `switch` case 类型、case 重复、default 重复。
 
-## 符号表 SymTable
-
-原设计：
-栈式符号表，记录当前符号表指针和顶层 global 符号表指针。
-
-修改后的设计：
-由于我的实现中，第一遍完成词法分析、语法分析、语义分析，第二遍完成中间代码生成，第三遍完成 MIPS 生成。
-
-中间代码生成和符号表的生长过程(语义分析)不在同一遍内完成，
-因此需要在第一遍的语义分析结束后，保留所有符号表，以便第二遍的中间代码生成中访问符号表。
-重构后，符号表使用树形结构。
-
-每一个 SymTab 包含了上一级符号表指针、下一级的多个符号表指针、自身包含的符号哈希表（标识符名->符号表表项）、符号表深度。
-
-在全局数据区，记录了当前符号表指针以及全局（最外层）符号表。
-
-```c++
-class SymTab {
-    SymTab *prev; // prev SymTable
-    std::vector<std::unique_ptr<SymTab>> next; // next SymTable
-    std::unordered_map<std::string, Symbol> symbols;
-    int depth;
-    // ...
-}
-```
-
-每一个符号表表项包含了所有可能的信息，有一定的内存浪费，但是书写代码方便，运行效率较高。
-
-符号表表项是 Symbol，有以下属性：
-
-- 符号类型：值、函数、函数形参
-- 数据类型：Void, Int, IntPtr（函数形参为数组地址）
-- cons 常量标记
-- dims 变量/函数形参的维度
-- initVal 常量的初始值
-- params 函数的形参表
-
-### 常值计算
-
-语义分析的符号表填表中，需要解析数组维度，进行编译时常量计算。
-
-### 符号表作用域
-
-for 语句的 (...) 与 {...} 是同一个作用域，专题报告有错。
-
-符号表深度修改位置： `FuncDef` `MainFuncDef` `BigForStmt` `IfStmt` `BlockStmt` (不是在 `block` 内!)
-
-## 错误处理 Error Handling
-
-原设计和编码后的设计是一致的。
-在后续开发中，我额外自定义了一些错误，会生成到 error.txt 中，用于自己 debug。主要为类型判断。
-
-在词法分析阶段 Lexer 记录错误位置(作业仅要求行号)，在词法分析、语法分析、语义分析中完成错误判断、处理。
-
-错误可分为语法错误和语义错误，在 词法分析、语法分析、语义分析中完成。
-在我的设计中，中间代码生成和 MIPS生成中不涉及错误处理。
+变量声明时会先把当前定义加入符号表，再解析 initializer。这样 `int d = d;` 会按“引用当前已定义变量”处理，而不是误报未定义。
 
 ## 中间代码 IR
 
-### 数据结构
-
-遍历 AST 语法树，输出中间代码容器 Module（后续继续生成到MIPS）
-
-我的中间表示结构参照了 LLVM IR 的设计：
-Module 是一个编译单元，我们的项目只有单文件编译，只有一个 Module
+IR 结构参考 LLVM 的层次设计，但保持为适合课程实现的四元式：
 
 ```text
-Module{Global全局变量表}{Function函数表}
-Function{BasicBlock基本块}  
-BasicBlock{Inst中间四元式}
+Module
+  Global variables
+  Functions
+    BasicBlocks
+      Inst
 ```
 
-将全局变量和 const 变量初值存储在符号表中， 常量计算方法访问符号表可以获取 const 变量的值。
+四元式指令结构：
 
-中间代码生成中，可以使用符号表的常量信息优化，在编译时就直接带入 const 变量的值，无需在运行时加载。
+```cpp
+struct Inst {
+    Op op;
+    std::unique_ptr<Element> res;
+    std::unique_ptr<Element> arg1;
+    std::unique_ptr<Element> arg2;
+};
+```
 
-四元式由4部分组成：Op 操作符、3个 Element 元素。
+`Element` 的主要派生类：
 
-Element 有4个子类：变量 Var，临时变量 Temp，标签 Label，常量 ConstVal，字符串常量 Str。
+- `Var`：变量或数组对象，包含名称、作用域深度、维度、类型和符号类别。
+- `Temp`：临时值。
+- `ConstVal`：立即数。
+- `Label`：基本块或函数标签。
+- `Str`：字符串常量。
 
-### 类型系统
+主要 IR 指令包括：
 
-前端 Parser 需要将类型录入 SymTab，还需要添加函数参数和函数返回值，再将类型录入IR::Module，在 MIPS 生成时不再使用符号表。
+- 内存：`Alloca`、`Load`、`LoadPtr`、`LoadDynamic`、`Store`、`StoreDynamic`。
+- 算术与逻辑：`Add`、`Sub`、`Mul`、`Div`、`Mod`、`And`、`Or`、`Not`。
+- 比较：`Leq`、`Lss`、`Geq`、`Gre`、`Eql`、`Neq`。
+- 控制流：`Br`、`Bif0`、`Bif1`。
+- 调用：`Call`、`PushParam`、`PushAddressParam`、`Ret`、`RetMain`。
+- I/O：`GetInt`、`GetChar`、`GetString`、`PrintInt`、`PrintChar`、`PrintStr`。
+- 栈作用域：`InStack`、`OutStack`。
 
-本编译器的类型系统不完善，但是足以通过测评。支持多种类型(不止int)需要花费大量精力重构代码。
+### 作用域栈
 
-### 中间代码生成
+局部作用域结束后，后端需要回收其中声明的变量栈空间。IR 中插入 `InStack` / `OutStack`，用于在 MIPS 后端保存和恢复 `StackMemory::curOffset`。
 
-如果单独建类 Visitor，在遍历语法树时，
-为了区分不同的语法成分，需要多次进行动态类型转换 dynamic_cast(cpp)/instanceof(java) 判断多态性，这么做极其低效，并且代码不优雅。
-
-```java
-if (stmt instanceof AssignStmt) {
-    analyseAssignStmt((AssignStmt) simple);
-} else if (stmt instanceof BreakStmt) {
-    analyseBreakStmt((BreakStmt) simple);
-} else if (stmt instanceof ContinueStmt) {
-    ...
+```c
+int a;
+{
+    int b;
 }
+int c;
 ```
 
-下面修改设计：使用多态性，为 AST 基类提供虚函数，让 AST 派生类重载基类的中间代码生成方法。这样显著提高效率，更加优雅。
-这么做，就需要将代码生成方法放入到 AST 节点类中，无需单独建立中间代码生成的类。
+进入内部块时保存当前 offset，离开时恢复，保证 `b` 的空间可以被后续局部变量复用。
 
-不同的 AST 节点类的中间代码生成方法的返回值不同，如 CompUnit 返回 Module，
+### 数组偏移
 
-### 作用域和栈
+数组偏移计算分两类：
 
-为了对应变量在栈上的作用域，我会生成特殊 IR (InStack OutStack) ，将当前的栈偏移量入栈，在结束时出栈恢复相应的偏移量。
+- 下标全为常量：在编译期折叠为 `ConstVal`。
+- 存在运行期下标：生成动态偏移计算 IR。
 
-```c++
-int a0_0; // curOffset = 4
-{ // InStack 保存当前栈偏移量 4
-    int a1_0; // curOffset = 8
-    int a1_1; // curOffset = 12
-} // OutStack 恢复栈偏移量 4
-int a0_1; // curOffset = 8
-int a0_2; // curOffset = 12
-```
+元素大小由类型决定：
 
-### 寄存器冲突
-
-由于寄存器冲突，函数传参使用寄存器 `$a0-$a3` 会十分复杂，我直接将函数参数保存在栈上传递。
-
-如果将函数返回值保存在 $v0，可能会导致函数返回值覆盖。
-我的解决办法是，在获取函数返回值后，立即使用一个临时寄存器保存当前的 $v0。
+- `int` 元素偏移乘 4。
+- `char` 元素偏移按字节计算。
 
 ## 目标代码 MIPS
 
-函数调用时，生成指令用于维护栈指针寄存器 $sp 偏移量。
+MIPS 后端位于 `src/backend`，主要组件：
 
-我在目标代码生成部分没有使用符号表，将变量的地址都另外自行保存了。
-目标代码生成内部存有 变量名->(栈/全局数据区)地址 的映射表。
+- `Instruction.*`：IR 到 MIPS 指令翻译。
+- `Register.*`：临时寄存器和变量寄存器分配。
+- `Memory.*`：栈偏移映射。
+- `MIPS.*`：模块级汇编输出和简单 peephole 优化。
 
-### 栈内存分配
+### 数据段
 
-遇到特殊 IR (InStack OutStack) 时，会改变当前的 $sp 的偏移量。
+全局变量和 static 局部变量输出到 `.data`：
 
-### 临时变量的寄存器/内存分配策略
+- `int` 使用 `.word`。
+- `char` 使用 `.byte`。
+- 字符串常量使用 `.asciiz`。
 
-IR::Temp -> real Register
+static 局部变量在符号表中记录一个唯一的全局存储名，例如：
 
-`$t0` 开始设置临时寄存器，只需修改 MAX_TEMP_REGS 即可调整临时寄存器数量。为保证程序正确性， MAX_TEMP_REGS 最小值为4。
+```text
+__static_map_cnt_0
+```
 
-若没有可用临时寄存器，则将临时变量存储到内存中。
-所有临时变量只生成一次，只使用一次，getReg()使用后马上释放寄存器。
+### 栈内存
+
+后端维护 `StackMemory::curOffset` 表示当前栈帧中已使用的空间。变量到栈偏移的映射存储在：
+
+```cpp
+StackMemory::varToOffset
+```
+
+局部变量分配策略：
+
+- 标量变量可优先放入 `$s` 寄存器。
+- 数组始终放在栈上，即使长度为 1。原因是数组可能作为实参传地址，必须有稳定可取的内存地址。
+- `char` 数组按字节分配；`int` 和 word 对齐对象会按 4 字节对齐。
+
+地址运算使用 `addu/addiu`，避免 Mars 对高地址栈指针加偏移时报 arithmetic overflow。
+
+### 寄存器分配
+
+临时值使用 `$t` 寄存器池：
+
+- IR `Temp` 通常只定义一次、使用一次。
+- `getReg()` 获取寄存器后可及时释放已消费的临时寄存器。
+- 若临时寄存器不足，会退化到栈上存储。
+
+局部标量变量使用 `$s` 寄存器池：
+
+- 离开作用域时释放对应变量寄存器。
+- 函数调用前保存当前使用的 `$s` 和 `$t` 寄存器，返回后恢复。
 
 ### 函数调用
 
+本实现没有使用 `$a0-$a3` 传递用户函数参数，而是统一通过栈传参，简化寄存器冲突处理。
+
+调用过程：
+
+1. 按实参逆序生成 `PushParam` 或 `PushAddressParam`。
+2. 调整 `$sp`，保存 `$sp`、`$ra`、临时寄存器和变量寄存器。
+3. `jal` 到目标函数。
+4. 恢复现场。
+5. 如果函数有返回值，立即把 `$v0` 移动到新的 `IR::Temp`，避免嵌套调用覆盖。
+
+数组实参传递的是地址：
+
+- 普通数组：基址加偏移。
+- 数组形参再传递：先从形参槽位加载原始地址，再叠加偏移。
+
+## 错误处理
+
+错误处理统一由 `Error` 管理。官方错误以：
+
 ```text
-MIPS stack memory map
-In funcCall, StackMemory::curOffset = 0
-0 -> 4GB
-                                      $sp
-                                       ↓
-  s7 ...  s1  s0 | t7  ... t1 t0 ra sp | p0(parameter) p1 ... pN-1 |
- -18 ... -12 -11 | -10 ... -4 -3 -2 -1 | 0             1  ... N-1  |
--------------
-MAX_TEMP_REGS = 8
+<line> <code>
 ```
 
-函数调用保存现场时，会保存当前使用的临时寄存器，但分配总额 MAX_TEMP_REGS 的栈内存，这样被调用的子函数在定位栈内存时就无需考虑父函数使用了多少临时寄存器了。
+形式写入 `error.txt`。
 
-另一种方法是，在 jal 之前将已使用的 tempRegs 数量保存到某实际寄存器 realReg $?，使用 realReg $? 代替 $sp
-来定位内存（速度较慢，但栈内存占用较少）。
+为避免级联报错过多，错误集合按 `(row, code)` 去重。内部调试错误只设置 `hasError`，不写入官方 `error.txt`，防止影响测试输出。
 
-竞速仅考虑速度，这里不考虑爆栈。这里的选择是空间换时间。
+缺失 `;`、`)`、`]` 的行号采用最近已消费 token 的行号。这个规则对跨行表达式和不完整函数调用更稳定，例如：
 
-## 代码优化
-
-由于本学期选修了较多课程，后期优化时间有限。
-
-中间代码优化已经被融合在了代码生成部分。
-主要进行了后端优化。
-
-### 临时寄存器分配
-
-我使用了 `$t0-$t8` 作为临时寄存器池，使用先进先出的规则，为中间代码的临时变量分配临时寄存器。
-
-如果临时寄存器不足，则将该临时变量存储到内存当中。
-
-为保证正确性，临时寄存器池应当至少包含 4 个寄存器。
-
-### 全局寄存器分配
-
-中间代码生成 Alloca 指令，为变量分配栈内存。
-
-在后端 MIPS 代码生成中，我依照先进先出的规则(时间限制，没有使用图着色算法)，为变量分配8个寄存器 `$s0-$s8`，其余变量放在内存中。
-在超出变量的作用域后，会释放该变量对应的寄存器。
-
-在竞速测评中，我尝试扩大8个寄存器为10个，但是结果一致，我推测全局寄存器没有被完全分配，测试点内的变量冲突较少。
-因此使用其它寄存器分配算法结果也是一样的?
-
-### 常量计算
-
-在数组下标计算部分，我会尝试在编译期计算出偏移量，避免在生成的目标代码中包含偏移量计算指令。
-
-### 后端指令合并
-
-MIPS 部分指令支持立即数直接参与计算，无需提前加载到寄存器中。
-
-```mips
-li   $t1 1
-addu $t2 $t0 $t1
-------------------
-addiu $t2 $t0 1
+```c
+int a = f(
+b;
 ```
 
-move 指令也可以与相邻的指令合并。
+应将缺失右括号报在上一处有效 token 所在行。
 
-### 原地跳转指令消除
+## 测试设计
 
-跳转指令如果跳转到的是下一个基本块，就可以消除该条无效跳转指令。
+测试使用 `testcase-2026` 生成的测试集和 Mars 运行 MIPS 汇编。
+
+常用命令：
+
+```powershell
+make generate
+cmake --build build --config Release
+powershell -ExecutionPolicy Bypass -File test\run-generated.ps1
+powershell -ExecutionPolicy Bypass -File test\run-generated.ps1 -All
+```
+
+测试脚本流程：
+
+1. 对正确用例编译源程序，要求 `error.txt` 为空。
+2. 使用 Mars 运行 `mips.txt`。
+3. 比较 Mars 输出和 `ans.txt`。
+4. 对错误用例只比较 `error.txt`。
+
+当前全量测试结果：
+
+```text
+Correct cases: 244
+Error cases:   44
+Failures:      0
+```
+
+`test/run-generated.ps1` 是本地测试 harness，位于 ignored 的 `test/` 目录下，不属于编译器提交内容。Mars 对 syscall 5 的 EOF 处理会抛异常，因此脚本会把纯 `get_int` 输入规整为逐行整数，并在末尾补充 0，避免回归用例因输入耗尽而失败。
+
+## 优化与取舍
+
+当前优化以简单、局部、稳定为主：
+
+- 常量数组下标在 IR 生成阶段折叠。
+- `char` 值在需要时用 `andi 0xFF` 截断。
+- 乘 4 偏移使用 `sll`。
+- `li + addu/subu/and/or/slt` 可合并为立即数指令。
+- 部分相邻 `move` 可合并。
+
+尚未实现的优化：
+
+- 全局数据流分析。
+- 图着色寄存器分配。
+- 死代码消除。
+- 公共子表达式消除。
+- 基本块级控制流清理。
+
+本项目优先保证语义正确性和测试稳定性。尤其在函数调用、数组传参、错误恢复这些位置，采用了更保守但更可控的实现方式。
