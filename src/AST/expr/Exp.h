@@ -147,7 +147,7 @@ struct MultiExp {
     std::unique_ptr<IR::Temp> genIR(IR::BasicBlocks &bBlocks) const {
         using namespace IR;
         auto lastRes = first->genIR(bBlocks);
-        for (int i = 0; i < ops.size(); i++) {
+        for (size_t i = 0; i < ops.size(); ++i) {
             auto t = elements[i]->genIR(bBlocks);
             Type resultType = ptrToValue(lastRes->type);
             if (ops[i] == LexType::LSS || ops[i] == LexType::GRE || ops[i] == LexType::LEQ || ops[i] == LexType::GEQ
@@ -201,7 +201,7 @@ struct MultiExp {
 
         Type type = first->getType();
         bool typeMismatch = false;
-        for (int i = 0; i < elements.size(); i++) {
+        for (size_t i = 0; i < elements.size(); ++i) {
             Type elementType = elements[i]->getType();
             if (remainingRank(first.get()) > 0 || remainingRank(elements[i].get()) > 0
                 || type == Type::Void || elementType == Type::Void

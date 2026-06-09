@@ -18,7 +18,7 @@ Word words[Lexer::deep];
 LexType &Lexer::curLexType = words[0].first;
 Token &Lexer::curToken = words[0].second;
 
-int Lexer::pos[deep]; // count from 1
+size_t Lexer::pos[deep]; // count from 1
 int Lexer::column[deep]; // count from 1
 int Lexer::row[deep]; // count from 1.
 // ReSharper disable once CppRedundantQualifier
@@ -26,7 +26,7 @@ int &Lexer::curRow = Lexer::row[0];
 int Lexer::lastRow = 1;
 
 char c; // c = fileContents[posTemp - 1]
-int posTemp;
+size_t posTemp;
 int columnTemp;
 int rowTemp{1};
 
@@ -39,6 +39,12 @@ LinkedHashMap<std::string, LexType> reserveWords;
 
 Word Lexer::peek(int n) {
     return words[n];
+}
+
+void advanceColumn(size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        ++columnTemp;
+    }
 }
 
 // also return EOF
@@ -156,8 +162,8 @@ Word Lexer::next() {
         // special operator +-*/ && &
         for (const auto &[str, type]: reserveWords) {
             if (fileContents.substr(posTemp - 1, str.length()) == str) {
-                posTemp += static_cast<int>(str.length());
-                columnTemp += static_cast<int>(str.length());
+                posTemp += str.length();
+                advanceColumn(str.length());
                 c = fileContents[posTemp - 1];
 
                 token = str;
@@ -268,7 +274,7 @@ void updateWords(LexType l, Token t) {
     if (words[0].first != LexType::LEX_EMPTY && words[0].first != LexType::LEX_END) {
         lastRow = row[0];
     }
-    for (int i = 0; i < deep - 1; ++i) {
+    for (size_t i = 0; i < deep - 1; ++i) {
         words[i] = words[i + 1];
         pos[i] = pos[i + 1];
         column[i] = column[i + 1];
@@ -286,7 +292,7 @@ void updateWords(LexType l, Token t) {
 // distinguish between Exp and LVal in Stmt
 // It's wrong if Cond is a kind of Exp, but our work doesn't require it.
 bool Lexer::findAssignBeforeSemicolon() {
-    for (int t = pos[0] - 1;
+    for (auto t = pos[0] == 0 ? size_t{0} : pos[0] - 1;
          t < fileContents.length() && fileContents[t] != ';'; ++t) {
         if (fileContents[t] == '\n') {
             return false;
@@ -298,7 +304,7 @@ bool Lexer::findAssignBeforeSemicolon() {
     return false;
 }
 
-void Lexer::init(const std::string &inFile, const std::string &outFile) {
+void Lexer::init(const std::string &inFile, [[maybe_unused]] const std::string &outFile) {
     buildReserveWords();
     lastRow = 1;
 
@@ -320,7 +326,7 @@ void Lexer::init(const std::string &inFile, const std::string &outFile) {
     fileContents = buffer.str();
 
     while (isspace(nextChar())) {}
-    for (int i = 0; i < deep; ++i) {
+    for (size_t i = 0; i < deep; ++i) {
         next();
     }
 }

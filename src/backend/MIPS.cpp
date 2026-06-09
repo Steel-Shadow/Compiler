@@ -51,7 +51,7 @@ void MIPS::genMIPS(const IR::Module &module) {
     output(".data");
     for (auto &[name, globVar]: module.getGlobVars()) {
         std::string dataLine = name + (globVar.type == Type::Char ? ": .byte " : ": .word ");
-        for (int i = 0; i < static_cast<int>(globVar.initVal.size()); ++i) {
+        for (size_t i = 0; i < globVar.initVal.size(); ++i) {
             if (i != 0) {
                 dataLine += ", ";
             }
@@ -347,7 +347,7 @@ bool mergeMoveIntoNextR(size_t index, bool requireRsUse, bool requireRtUse) {
         cal->rt = move->rs;
     }
 
-    assemblies.erase(assemblies.begin() + static_cast<long long>(index));
+    assemblies.erase(assemblies.begin() + index);
     return true;
 }
 
@@ -361,7 +361,7 @@ bool MIPS::allMergeLi_R() {
     // addiu $t2 $t0 1
     bool flag = false;
     for (size_t i = 0; i + 1 < assemblies.size();) {
-        auto assem1 = assemblies.begin() + static_cast<long long>(i);
+        auto assem1 = assemblies.begin() + i;
         auto assem2 = assem1 + 1;
 
         auto inst1 = dynamic_cast<Instruction *>(assem1->get());
@@ -398,7 +398,7 @@ bool MIPS::allMergeLi_R() {
 bool MIPS::allMergeLi_Move() {
     bool flag = false;
     for (size_t i = 0; i + 1 < assemblies.size();) {
-        auto assem1 = assemblies.begin() + static_cast<long long>(i);
+        auto assem1 = assemblies.begin() + i;
         auto assem2 = assem1 + 1;
 
         auto inst1 = dynamic_cast<Instruction *>(assem1->get());
@@ -451,7 +451,7 @@ bool MIPS::allMergeMove_R_rt() {
 bool MIPS::allMergeR_Move() {
     bool flag = false;
     for (size_t i = 0; i + 1 < assemblies.size();) {
-        auto assem1 = assemblies.begin() + static_cast<long long>(i);
+        auto assem1 = assemblies.begin() + i;
         auto assem2 = assem1 + 1;
 
         auto cal = dynamic_cast<R_Inst *>(assem1->get());

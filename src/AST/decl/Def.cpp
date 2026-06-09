@@ -44,7 +44,7 @@ std::unique_ptr<Def> Def::parse(bool cons, Type type, bool statik) {
         storageName = "__static_" + n->ident + "_" + std::to_string(staticId++);
     }
 
-    int size = 1;
+    std::vector<int>::size_type size = 1;
     for (auto &i: dims) {
         size *= i;
     }

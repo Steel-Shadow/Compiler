@@ -419,12 +419,12 @@ void MIPS::LoadImd(const IR::Inst &inst) {
     checkTempReg(res, regRes);
 }
 
-void MIPS::GetInt(const IR::Inst &inst) {
+void MIPS::GetInt(const IR::Inst &) {
     assemblies.push_back(std::make_unique<I_imm_Inst>(Op::li, Register::v0, Register::none, 5));
     assemblies.push_back(std::make_unique<R_Inst>(Op::syscall, Register::none, Register::none, Register::none));
 }
 
-void MIPS::GetChar(const IR::Inst &inst) {
+void MIPS::GetChar(const IR::Inst &) {
     assemblies.push_back(std::make_unique<I_imm_Inst>(Op::li, Register::v0, Register::none, 12));
     assemblies.push_back(std::make_unique<R_Inst>(Op::syscall, Register::none, Register::none, Register::none));
 }
@@ -566,13 +566,15 @@ void MIPS::Call(const IR::Inst &inst) {
     // I choose to use more stack memory, but fewer instructions.
     // Another way is, before jal , save the number of used tempRegs to a realReg $?,
     // use the realReg $? to locate parameters instead of $sp. (slower but less memory use of stack)
+    int unusedTempRegSlots = MAX_TEMP_REGS;
     for (auto &[tempId, reg]: tempToRegs) {
         StackMemory::curOffset += wordSize;
         assemblies.push_back(std::make_unique<I_imm_Inst>(
                 Op::sw, reg, Register::sp, -StackMemory::curOffset));
+        --unusedTempRegSlots;
     }
 
-    StackMemory::curOffset += wordSize * (MAX_TEMP_REGS - static_cast<int>(tempToRegs.size()));
+    StackMemory::curOffset += wordSize * unusedTempRegSlots;
 
     for (auto &[var, reg]: varToRegs) {
         StackMemory::curOffset += wordSize;
@@ -590,7 +592,7 @@ void MIPS::Call(const IR::Inst &inst) {
         StackMemory::curOffset -= wordSize;
     }
 
-    StackMemory::curOffset -= wordSize * (MAX_TEMP_REGS - static_cast<int>(tempToRegs.size()));
+    StackMemory::curOffset -= wordSize * unusedTempRegSlots;
 
     // restore tempRegs
     for (auto i = tempToRegs.rbegin(); i != tempToRegs.rend(); ++i) {

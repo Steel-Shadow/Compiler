@@ -24,7 +24,7 @@ extern std::string fileContents;
 static constexpr size_t deep = 3;
 
 // char c;            // c = fileContents[posTemp - 1]
-extern int pos[deep]; // count from 1
+extern size_t pos[deep]; // count from 1
 extern int column[deep]; // count from 1
 extern int row[deep]; // count from 1
 extern int &curRow; // row[0]

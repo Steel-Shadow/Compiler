@@ -180,10 +180,11 @@ GlobVar::GlobVar(bool cons, Type type, const std::vector<int> &dims) :
 }
 
 
-Function::Function(std::string name, Type reType,
+Function::Function(std::string name,
+                   Type returnType,
                    const std::vector<Param> &params) :
     name(std::move(name)),
-    reType(reType),
+    returnType(returnType),
     params(params) {
     idAllocator = 0;
 }
@@ -193,7 +194,9 @@ void Function::moveBasicBlocks(BasicBlocks &&bBlocks) {
 }
 
 void Module::outputIR() const {
-    for (const auto &[ident, globVar]: globVars) {
+#if defined(STDOUT_IR) || defined(FILEOUT_IR)
+    for (const auto &entry: globVars) {
+        const auto &ident = entry.first;
 #if defined(STDOUT_IR)
         std::cout << ident << '\n';
 #endif
@@ -202,6 +205,7 @@ void Module::outputIR() const {
         IRFileStream << ident << '\n';
 #endif
     }
+#endif
     for (auto &i: mainFunction->getBasicBlocks()) {
         i->outputIR();
     }
@@ -237,6 +241,10 @@ int Function::idAllocator = 0;
 
 const BasicBlocks &Function::getBasicBlocks() const {
     return basicBlocks;
+}
+
+Type Function::getReturnType() const {
+    return returnType;
 }
 
 std::vector<Param> Function::getParams() const {

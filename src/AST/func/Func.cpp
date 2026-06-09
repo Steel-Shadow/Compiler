@@ -210,8 +210,8 @@ std::unique_ptr<FuncRParams> FuncRParams::parse() {
 
 std::unique_ptr<IR::Function> FuncDef::genIR() {
     using namespace IR;
-    auto params = SymTab::find(ident)->params;
-    auto function = std::make_unique<Function>(ident, funcType->getType(), params);
+    auto functionSymbol = SymTab::find(ident);
+    auto function = std::make_unique<Function>(ident, functionSymbol->type, functionSymbol->params);
 
     BasicBlocks bBlocks;
     Function::idAllocator = 0;

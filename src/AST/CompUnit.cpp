@@ -16,8 +16,8 @@ std::unique_ptr<CompUnit> CompUnit::parse() {
     SymTab::addBuiltins();
 
     while (Lexer::curLexType == LexType::CONSTTK || Lexer::curLexType == LexType::INTTK || Lexer::curLexType == LexType::CHARTK) {
-        if (Lexer::peek(1).first == LexType::IDENFR && Lexer::peek(2).first == LexType::LPARENT
-            || Lexer::curLexType == LexType::INTTK && Lexer::peek(1).first == LexType::MAINTK) {
+        if ((Lexer::peek(1).first == LexType::IDENFR && Lexer::peek(2).first == LexType::LPARENT)
+            || (Lexer::curLexType == LexType::INTTK && Lexer::peek(1).first == LexType::MAINTK)) {
             break;
         }
         n->decls.push_back(Decl::parse());

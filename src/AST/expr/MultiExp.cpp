@@ -41,7 +41,7 @@ int MulExp::evaluate() const {
     if (Exp::getNonConstValueInEvaluate) {
         return 0;
     }
-    for (int i = 0; i < ops.size(); ++i) {
+    for (size_t i = 0; i < ops.size(); ++i) {
         auto op = ops[i];
         auto e = elements[i]->evaluate();
         if (Exp::getNonConstValueInEvaluate) {
@@ -85,7 +85,7 @@ int AddExp::evaluate() const {
     if (Exp::getNonConstValueInEvaluate) {
         return 0;
     }
-    for (int i = 0; i < ops.size(); ++i) {
+    for (size_t i = 0; i < ops.size(); ++i) {
         auto op = ops[i];
         auto e = elements[i]->evaluate();
         if (Exp::getNonConstValueInEvaluate) {
@@ -210,7 +210,7 @@ void LOrExp::genIR(IR::BasicBlocks &basicBlocks, IR::Label &trueBranch, IR::Labe
         first->genIR(basicBlocks, trueBranch, firstBasicBlock->label);
         basicBlocks.emplace_back(std::move(firstBasicBlock));
 
-        for (int i = 0; !elements.empty() && i < elements.size() - 1; ++i) {
+        for (size_t i = 0; i + 1 < elements.size(); ++i) {
             auto newBasicBlock = std::make_unique<IR::BasicBlock>("LAndExp");
             elements[i]->genIR(basicBlocks, trueBranch, newBasicBlock->label);
             basicBlocks.emplace_back(std::move(newBasicBlock));

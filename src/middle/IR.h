@@ -211,7 +211,7 @@ using BasicBlocks = std::vector<std::unique_ptr<BasicBlock>>;
 // Function init with a basicBlocks has an empty BasicBlock (can be optimized)
 class Function {
     std::string name;
-    Type reType; // void int
+    Type returnType;
     std::vector<Param> params; // Param -> p | p[] | p[][...]
     BasicBlocks basicBlocks;
 
@@ -220,11 +220,13 @@ public:
     // reset to 0 at start of Function
     static int idAllocator;
 
-    Function(std::string name, Type reType, const std::vector<Param> &params);
+    Function(std::string name, Type returnType, const std::vector<Param> &params);
 
     void moveBasicBlocks(BasicBlocks &&bBlocks);
 
     const BasicBlocks &getBasicBlocks() const;
+
+    Type getReturnType() const;
 
     std::vector<Param> getParams() const;
 };

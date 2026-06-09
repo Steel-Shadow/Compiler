@@ -25,7 +25,7 @@ void Parser::singleLex(LexType type, int row) {
     }
 }
 
-void Parser::output(AST type) {
+void Parser::output([[maybe_unused]] AST type) {
 #ifdef STDOUT_PARSER
     std::cout << "<" << toString(type) << ">" << '\n';
 #endif

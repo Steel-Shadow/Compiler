@@ -480,7 +480,7 @@ void SwitchStmt::genIR(IR::BasicBlocks &bBlocks) {
     auto endBlock = std::make_unique<BasicBlock>("SwitchEnd");
     auto endLabel = endBlock->label;
 
-    for (int i = 0; i < cases.size(); ++i) {
+    for (size_t i = 0; i < cases.size(); ++i) {
         if (cases[i]->isDefault) {
             continue;
         }
@@ -511,7 +511,7 @@ void SwitchStmt::genIR(IR::BasicBlocks &bBlocks) {
                                  nullptr));
 
     ControlFlow::breakLabels.push(endLabel);
-    for (int i = 0; i < cases.size(); ++i) {
+    for (size_t i = 0; i < cases.size(); ++i) {
         bBlocks.emplace_back(std::move(caseBlocks[i]));
         for (auto &stmt: cases[i]->stmts) {
             stmt->genIR(bBlocks);
@@ -567,7 +567,7 @@ void ReturnStmt::genIR(IR::BasicBlocks &bBlocks) {
 
 void PrintStmt::checkFormatString(const std::string &str) {
     // skip begin and end " "
-    for (int i = 1; i < str.length() - 1; i++) {
+    for (size_t i = 1; i + 1 < str.length(); ++i) {
         char c = str[i];
 
         if (c == '\\') {
@@ -582,7 +582,7 @@ void PrintStmt::checkFormatString(const std::string &str) {
                 formatTypes.push_back(format);
                 numOfFormat++;
             }
-        } else if (!(c == 32 || c == 33 || c >= 40 && c <= 126)) {
+        } else if (!(c == 32 || c == 33 || (c >= 40 && c <= 126))) {
             Error::raise('a');
         }
     }
@@ -614,7 +614,7 @@ std::unique_ptr<PrintStmt> PrintStmt::parse() {
     if (numOfExp != n->numOfFormat) {
         Error::raise('l', row);
     }
-    for (int i = 0; i < n->exps.size() && i < n->formatTypes.size(); ++i) {
+    for (size_t i = 0; i < n->exps.size() && i < n->formatTypes.size(); ++i) {
         auto remainingRank = [](const std::unique_ptr<Exp> &exp) -> size_t {
             auto lVal = exp->getLVal();
             if (!lVal) {
@@ -673,7 +673,7 @@ void PrintStmt::genIR(IR::BasicBlocks &bBlocks) {
     std::vector<PrintArg> args;
     args.reserve(formatTypes.size());
 
-    for (int i = 0; i < exps.size() && i < formatTypes.size(); ++i) {
+    for (size_t i = 0; i < exps.size() && i < formatTypes.size(); ++i) {
         PrintArg arg;
         arg.format = formatTypes[i];
         if (arg.format == 'd' || arg.format == 'c') {
@@ -703,7 +703,7 @@ void PrintStmt::genIR(IR::BasicBlocks &bBlocks) {
     // string | %d | %c | %s
     std::string buffer;
     // skip \" in formatString
-    for (int i = 1, j = 0; i < formatString.length() - 1; i++) {
+    for (size_t i = 1, j = 0; i + 1 < formatString.length(); ++i) {
         if (formatString[i] == '%') {
             char format = formatString[++i];
             addStr(bBlocks, buffer);

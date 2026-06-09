@@ -5,7 +5,11 @@
 .vs/
 .idea/
 .cache/
+__pycache__/
+*.pyc
 
 cmake-build-*/
 build/
-test/
+InstructionStatistics.txt
+test/vendor/
+test/work/

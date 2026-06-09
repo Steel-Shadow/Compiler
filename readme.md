@@ -367,29 +367,38 @@ b;
 
 常用命令：
 
-```powershell
-make generate
-cmake --build build --config Release
-powershell -ExecutionPolicy Bypass -File test\run-generated.ps1
-powershell -ExecutionPolicy Bypass -File test\run-generated.ps1 -All
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+
+# 首次运行会克隆并生成 testcase-2026
+python3 test/run_testcase_2026.py --prepare
+
+# 全量前端/错误处理检查
+python3 test/run_testcase_2026.py --suite all
+
+# 运行 MIPS 并和 ans.txt 比对
+curl -L -o test/vendor/Mars-2024.jar https://github.com/Lord-Turmoil/Mars-for-BUAA/releases/download/v1.0.1/Mars-2024.jar
+python3 test/run_testcase_2026.py --mars-jar ./test/vendor/Mars-2024.jar
 ```
 
 测试脚本流程：
 
 1. 对正确用例编译源程序，要求 `error.txt` 为空。
-2. 使用 Mars 运行 `mips.txt`。
-3. 比较 Mars 输出和 `ans.txt`。
-4. 对错误用例只比较 `error.txt`。
+2. 若指定 `--mars-jar`，使用 Mars 运行 `mips.txt`，并比较输出和 `ans.txt`。
+3. 对错误用例比较生成的 `error.txt` 和标准 `error.txt`。
 
-当前全量测试结果：
+当前已验证的前端/错误处理测试结果：
 
 ```text
-Correct cases: 244
+Correct cases: 243
 Error cases:   44
 Failures:      0
 ```
 
-`test/run-generated.ps1` 是本地测试 harness，位于 ignored 的 `test/` 目录下，不属于编译器提交内容。Mars 对 syscall 5 的 EOF 处理会抛异常，因此脚本会把纯 `get_int` 输入规整为逐行整数，并在末尾补充 0，避免回归用例因输入耗尽而失败。
+`test/run_testcase_2026.py` 是项目内的测试 harness。外部 testcase 仓库、
+生成数据、Mars jar 和测试输出位于 `test/vendor/`、`test/work/` 等 ignored
+目录中，不随项目提交。
 
 ## 优化与取舍
 

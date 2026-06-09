@@ -94,8 +94,8 @@ std::unique_ptr<StringInitVal> StringInitVal::parse(bool cons) {
 
 std::vector<int> StringInitVal::evaluate() {
     std::vector<int> bytes;
-    for (int i = 1; i < static_cast<int>(stringConst.length()) - 1; ++i) {
-        if (stringConst[i] == '\\' && i + 1 < static_cast<int>(stringConst.length()) - 1) {
+    for (size_t i = 1; i + 1 < stringConst.length(); ++i) {
+        if (stringConst[i] == '\\' && i + 2 < stringConst.length()) {
             ++i;
             if (stringConst[i] == 'n') {
                 bytes.push_back('\n');

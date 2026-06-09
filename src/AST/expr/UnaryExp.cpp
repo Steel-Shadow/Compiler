@@ -172,8 +172,8 @@ bool LVal::getOffset(int &constOffset, std::unique_ptr<IR::Temp> &dynamicOffset,
     constOffset = 0;
     auto product = 1;
     bool getNonConstIndex = false;
-    for (int i = static_cast<int>(symDims.size()) - 1; i >= 0; --i) {
-        if (i != static_cast<int>(symDims.size()) - 1) {
+    for (size_t i = symDims.size(); i-- > 0;) {
+        if (i + 1 < symDims.size()) {
             product *= symDims[i + 1];
         }
 
@@ -399,7 +399,7 @@ std::unique_ptr<UnaryExp> UnaryExp::parse() {
         }
     }
 
-    for (int i = 0; i < n->ops.size(); i++) {
+    for (size_t i = 0; i < n->ops.size(); ++i) {
         output(AST::UnaryExp);
     }
 
@@ -519,11 +519,12 @@ void FuncCall::checkParams(const std::unique_ptr<FuncCall> &n, int row, const Sy
         Error::raise('d', row);
     } else {
         // check type of params
-        for (int i = 0; i < realParams.size(); i++) {
+        for (size_t i = 0; i < realParams.size(); ++i) {
             auto &rParam = realParams[i];
 
             size_t formalRank = funcSym->params[i].second->dims.size();
-            size_t symRank;
+            size_t symRank = 0;
+            bool invalidRank = false;
 
             size_t indexRank = 0;
             std::string ident;
@@ -546,14 +547,14 @@ void FuncCall::checkParams(const std::unique_ptr<FuncCall> &n, int row, const Sy
                 if (sym->symType == SymType::Func) {
                     // FuncCall
                     // void | int
-                    symRank = sym->type == Type::Void ? -1 : 0;
+                    invalidRank = sym->type == Type::Void;
                 } else {
                     // LVal
                     symRank = sym->dims.size();
                 }
             }
 
-            if (symRank - indexRank != formalRank) {
+            if (invalidRank || symRank < indexRank || symRank - indexRank != formalRank) {
                 Error::raise('e', row);
             }
         }
@@ -641,7 +642,7 @@ std::unique_ptr<IR::Temp> FuncCall::genIR(IR::BasicBlocks &bBlocks) {
     bBlocks.back()->addInst(Inst(Op::InStack, nullptr, nullptr, nullptr));
 
     if (funcRParams) {
-        for (int i = static_cast<int>(funcRParams->params.size()) - 1; i >= 0; --i) {
+        for (size_t i = funcRParams->params.size(); i-- > 0;) {
             auto &rParam = funcRParams->params[i];
             auto name = rParam->getIdent();
 

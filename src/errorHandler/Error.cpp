@@ -27,7 +27,7 @@ void Error::raise(char code, int row) {
 }
 
 // My error, which is not defined in course tasks.
-void Error::raise(const std::string &mes) {
+void Error::raise([[maybe_unused]] const std::string &mes) {
     hasError = true;
 #ifdef STDOUT_ERROR
     std::cout << "error: " << mes << " "
