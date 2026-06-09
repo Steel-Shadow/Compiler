@@ -100,13 +100,9 @@ void MIPS::genMIPS(const IR::Module &module) {
     }
 
     /*----- .text optimize ---------------------*/
-    // TODO: these two cause bugs!
-    // while (allMergeR_Move()) {}
-    // while (allMergeMove_R_rs()) {}
-    // while (allMergeLi_Move()) {}
-
-
-    // good optimize here
+    while (allMergeR_Move()) {}
+    while (allMergeMove_R_rs()) {}
+    while (allMergeLi_Move()) {}
     while (allMergeMove_R_rt()) {}
     while (allMergeLi_R()) {}
 
@@ -143,6 +139,220 @@ std::unique_ptr<I_imm_Inst> MIPS::mergeLi_R(const I_imm_Inst &li, const R_Inst &
     return std::make_unique<I_imm_Inst>(rOp_ImmOp(r.op), r.rd, r.rs, li.immediate);
 }
 
+namespace {
+
+bool validReg(Register reg) {
+    return reg != Register::none;
+}
+
+bool readsReg(const R_Inst &inst, Register reg) {
+    if (!validReg(reg)) {
+        return false;
+    }
+    switch (inst.op) {
+        case Op::move:
+        case Op::jr:
+            return inst.rs == reg;
+        case Op::mfhi:
+        case Op::none:
+            return false;
+        case Op::syscall:
+            return reg == Register::v0 || reg == Register::a0 || reg == Register::a1;
+        default:
+            return inst.rs == reg || inst.rt == reg;
+    }
+}
+
+bool writesReg(const R_Inst &inst, Register reg) {
+    if (!validReg(reg)) {
+        return false;
+    }
+    switch (inst.op) {
+        case Op::addu:
+        case Op::subu:
+        case Op::mul:
+        case Op::div:
+        case Op::mfhi:
+        case Op::and_:
+        case Op::or_:
+        case Op::add:
+        case Op::slt:
+        case Op::sle:
+        case Op::sge:
+        case Op::sgt:
+        case Op::seq:
+        case Op::sne:
+        case Op::move:
+            return inst.rd == reg;
+        case Op::syscall:
+            return reg == Register::v0;
+        default:
+            return false;
+    }
+}
+
+bool readsReg(const I_imm_Inst &inst, Register reg) {
+    if (!validReg(reg)) {
+        return false;
+    }
+    switch (inst.op) {
+        case Op::li:
+            return false;
+        case Op::sw:
+        case Op::sb:
+            return inst.rt == reg || inst.rs == reg;
+        default:
+            return inst.rs == reg;
+    }
+}
+
+bool writesReg(const I_imm_Inst &inst, Register reg) {
+    if (!validReg(reg)) {
+        return false;
+    }
+    switch (inst.op) {
+        case Op::sw:
+        case Op::sb:
+            return false;
+        default:
+            return inst.rt == reg;
+    }
+}
+
+bool readsReg(const I_label_Inst &inst, Register reg) {
+    if (!validReg(reg)) {
+        return false;
+    }
+    switch (inst.op) {
+        case Op::bne:
+            return inst.rs == reg || inst.rt == reg;
+        case Op::beqz:
+        case Op::bgtz:
+            return inst.rs == reg;
+        case Op::sw:
+        case Op::sb:
+            return inst.rs == reg || inst.rt == reg;
+        case Op::lw:
+        case Op::lbu:
+        case Op::la:
+            return inst.rt == reg;
+        default:
+            return false;
+    }
+}
+
+bool writesReg(const I_label_Inst &inst, Register reg) {
+    if (!validReg(reg)) {
+        return false;
+    }
+    switch (inst.op) {
+        case Op::lw:
+        case Op::lbu:
+        case Op::la:
+            return inst.rs == reg;
+        default:
+            return false;
+    }
+}
+
+bool readsReg(const Assembly *assembly, Register reg) {
+    if (auto inst = dynamic_cast<const R_Inst *>(assembly)) {
+        return readsReg(*inst, reg);
+    }
+    if (auto inst = dynamic_cast<const I_imm_Inst *>(assembly)) {
+        return readsReg(*inst, reg);
+    }
+    if (auto inst = dynamic_cast<const I_label_Inst *>(assembly)) {
+        return readsReg(*inst, reg);
+    }
+    return false;
+}
+
+bool writesReg(const Assembly *assembly, Register reg) {
+    if (auto inst = dynamic_cast<const R_Inst *>(assembly)) {
+        return writesReg(*inst, reg);
+    }
+    if (auto inst = dynamic_cast<const I_imm_Inst *>(assembly)) {
+        return writesReg(*inst, reg);
+    }
+    if (auto inst = dynamic_cast<const I_label_Inst *>(assembly)) {
+        return writesReg(*inst, reg);
+    }
+    if (auto inst = dynamic_cast<const J_Inst *>(assembly)) {
+        return inst->op == Op::jal && reg == Register::ra;
+    }
+    return false;
+}
+
+bool isControlBoundary(const Assembly *assembly) {
+    if (dynamic_cast<const Label *>(assembly)) {
+        return true;
+    }
+    if (dynamic_cast<const J_Inst *>(assembly)) {
+        return true;
+    }
+    if (auto inst = dynamic_cast<const I_label_Inst *>(assembly)) {
+        return inst->op == Op::bne || inst->op == Op::beqz || inst->op == Op::bgtz;
+    }
+    if (auto inst = dynamic_cast<const R_Inst *>(assembly)) {
+        return inst->op == Op::jr;
+    }
+    return false;
+}
+
+bool isReadBeforeOverwrite(size_t start, Register reg) {
+    if (!validReg(reg)) {
+        return false;
+    }
+    for (size_t i = start; i < assemblies.size(); ++i) {
+        const Assembly *assembly = assemblies[i].get();
+        if (readsReg(assembly, reg)) {
+            return true;
+        }
+        if (writesReg(assembly, reg)) {
+            return false;
+        }
+        if (isControlBoundary(assembly)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool mergeMoveIntoNextR(size_t index, bool requireRsUse, bool requireRtUse) {
+    auto move = dynamic_cast<R_Inst *>(assemblies[index].get());
+    auto cal = dynamic_cast<R_Inst *>(assemblies[index + 1].get());
+    if (!move || !cal || move->op != Op::move) {
+        return false;
+    }
+    if (requireRsUse && cal->rs != move->rd) {
+        return false;
+    }
+    if (requireRtUse && cal->rt != move->rd) {
+        return false;
+    }
+
+    const bool used = cal->rs == move->rd || cal->rt == move->rd;
+    if (!used) {
+        return false;
+    }
+    if (!writesReg(*cal, move->rd) && isReadBeforeOverwrite(index + 2, move->rd)) {
+        return false;
+    }
+
+    if (cal->rs == move->rd) {
+        cal->rs = move->rs;
+    }
+    if (cal->rt == move->rd) {
+        cal->rt = move->rs;
+    }
+
+    assemblies.erase(assemblies.begin() + static_cast<long long>(index));
+    return true;
+}
+
+} // namespace
+
 // merge immediate instructions
 bool MIPS::allMergeLi_R() {
     // li   $t1 1
@@ -150,7 +360,8 @@ bool MIPS::allMergeLi_R() {
     // ------------------
     // addiu $t2 $t0 1
     bool flag = false;
-    for (auto assem1 = assemblies.begin(); assem1 != assemblies.end() - 1; ++assem1) {
+    for (size_t i = 0; i + 1 < assemblies.size();) {
+        auto assem1 = assemblies.begin() + static_cast<long long>(i);
         auto assem2 = assem1 + 1;
 
         auto inst1 = dynamic_cast<Instruction *>(assem1->get());
@@ -159,26 +370,35 @@ bool MIPS::allMergeLi_R() {
         if (inst1 && inst1->op == Op::li && inst2) {
             auto li = dynamic_cast<I_imm_Inst *>(inst1);
             auto r = dynamic_cast<R_Inst *>(inst2);
+            if (!li || !r) {
+                ++i;
+                continue;
+            }
 
             constexpr int MAX_16_BIT = (1 << 15) - 1;
             constexpr int NEG_MIN_16_BIT = -(1 << 15);
             if (li->immediate > MAX_16_BIT || li->immediate < NEG_MIN_16_BIT) {
+                ++i;
                 continue;
             }
 
-            if (r && r->rt == li->rt && rOp_ImmOp(r->op) != Op::none) {
+            if (r->rt == li->rt && r->rs != li->rt && rOp_ImmOp(r->op) != Op::none
+                && (r->rd == li->rt || !isReadBeforeOverwrite(i + 2, li->rt))) {
                 *assem2 = mergeLi_R(*li, *r);
-                assem1 = assemblies.erase(assem1);
+                assemblies.erase(assem1);
                 flag = true;
+                continue;
             }
         }
+        ++i;
     }
     return flag;
 }
 
 bool MIPS::allMergeLi_Move() {
     bool flag = false;
-    for (auto assem1 = assemblies.begin(); assem1 != assemblies.end() - 1; ++assem1) {
+    for (size_t i = 0; i + 1 < assemblies.size();) {
+        auto assem1 = assemblies.begin() + static_cast<long long>(i);
         auto assem2 = assem1 + 1;
 
         auto inst1 = dynamic_cast<Instruction *>(assem1->get());
@@ -187,12 +407,15 @@ bool MIPS::allMergeLi_Move() {
         if (inst1 && inst1->op == Op::li && inst2 && inst2->op == Op::move) {
             auto li = dynamic_cast<I_imm_Inst *>(inst1);
             auto move = dynamic_cast<R_Inst *>(inst2);
-            if (li->rt == move->rs) {
+            if (li && move && li->rt == move->rs
+                && (move->rd == li->rt || !isReadBeforeOverwrite(i + 2, li->rt))) {
                 li->rt = move->rd;
                 assemblies.erase(assem2);
                 flag = true;
+                continue;
             }
         }
+        ++i;
     }
 
     return flag;
@@ -201,23 +424,12 @@ bool MIPS::allMergeLi_Move() {
 // Load
 bool MIPS::allMergeMove_R_rs() {
     bool flag = false;
-    for (auto assem1 = assemblies.begin(); assem1 != assemblies.end() - 1; ++assem1) {
-        auto assem2 = assem1 + 1;
-
-        auto inst1 = dynamic_cast<Instruction *>(assem1->get());
-        auto inst2 = dynamic_cast<Instruction *>(assem2->get());
-
-        if (inst1 && inst1->op == Op::move && inst2) {
-            auto move = dynamic_cast<R_Inst *>(inst1);
-
-            if (auto cal = dynamic_cast<R_Inst *>(inst2)) {
-                if (cal->rs == move->rd) {
-                    cal->rs = move->rs;
-                    assem1 = assemblies.erase(assem1);
-                    flag = true;
-                }
-            }
+    for (size_t i = 0; i + 1 < assemblies.size();) {
+        if (mergeMoveIntoNextR(i, true, false)) {
+            flag = true;
+            continue;
         }
+        ++i;
     }
 
     return flag;
@@ -225,23 +437,12 @@ bool MIPS::allMergeMove_R_rs() {
 
 bool MIPS::allMergeMove_R_rt() {
     bool flag = false;
-    for (auto assem1 = assemblies.begin(); assem1 != assemblies.end() - 1; ++assem1) {
-        auto assem2 = assem1 + 1;
-
-        auto inst1 = dynamic_cast<Instruction *>(assem1->get());
-        auto inst2 = dynamic_cast<Instruction *>(assem2->get());
-
-        if (inst1 && inst1->op == Op::move && inst2) {
-            auto move = dynamic_cast<R_Inst *>(inst1);
-
-            if (auto cal = dynamic_cast<R_Inst *>(inst2)) {
-                if (cal->rt == move->rd) {
-                    cal->rt = move->rs;
-                    assem1 = assemblies.erase(assem1);
-                    flag = true;
-                }
-            }
+    for (size_t i = 0; i + 1 < assemblies.size();) {
+        if (mergeMoveIntoNextR(i, false, true)) {
+            flag = true;
+            continue;
         }
+        ++i;
     }
 
     return flag;
@@ -249,24 +450,22 @@ bool MIPS::allMergeMove_R_rt() {
 
 bool MIPS::allMergeR_Move() {
     bool flag = false;
-    for (auto assem2 = assemblies.begin() + 1; assem2 != assemblies.end(); ++assem2) {
-        auto assem1 = assem2 - 1;
+    for (size_t i = 0; i + 1 < assemblies.size();) {
+        auto assem1 = assemblies.begin() + static_cast<long long>(i);
+        auto assem2 = assem1 + 1;
 
-        auto inst1 = dynamic_cast<Instruction *>(assem1->get());
-        auto inst2 = dynamic_cast<Instruction *>(assem2->get());
+        auto cal = dynamic_cast<R_Inst *>(assem1->get());
+        auto move = dynamic_cast<R_Inst *>(assem2->get());
 
-        // inst2 && inst2->op == Op::move && ...
-        if (inst1) {
-            auto move = dynamic_cast<R_Inst *>(inst2);
-
-            if (auto cal = dynamic_cast<R_Inst *>(inst1)) {
-                if (cal->op != Op::move && cal->rd == move->rs) {
-                    cal->rd = move->rd;
-                    assem2 = assemblies.erase(assem2);
-                    flag = true;
-                }
-            }
+        if (cal && move && move->op == Op::move && cal->op != Op::move
+            && writesReg(*cal, cal->rd) && cal->rd == move->rs
+            && (move->rd == cal->rd || !isReadBeforeOverwrite(i + 2, cal->rd))) {
+            cal->rd = move->rd;
+            assemblies.erase(assem2);
+            flag = true;
+            continue;
         }
+        ++i;
     }
 
     return flag;
