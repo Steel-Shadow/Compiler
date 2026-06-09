@@ -1,14 +1,10 @@
 cmake_minimum_required(VERSION 3.15)
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-#set(CMAKE_CXX_FLAGS "-v")
 
-if (CMAKE_BUILD_TYPE STREQUAL "Debug")
-    add_compile_definitions(MY_DEBUG)
-endif ()
+project(Compiler LANGUAGES C CXX)
 
-project(Compiler)
+option(COMPILER_ENABLE_WARNINGS "Enable common compiler warnings" ON)
+option(COMPILER_DEBUG_OUTPUT "Enable compiler debug output" OFF)
+
 add_subdirectory(src)
-

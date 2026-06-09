@@ -1,3 +1,6 @@
+.agents/
+.codex/
+
 .vscode/
 .vs/
 .idea/
@@ -6,8 +9,3 @@
 cmake-build-*/
 build/
 test/
-
-*.exe
-*.zip
-
-bin/

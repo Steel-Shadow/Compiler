@@ -63,20 +63,26 @@ src/
 
 ## 构建与运行
 
-项目使用 CMake 构建，输出文件为 `bin/Compiler.exe`。
+项目使用 CMake 构建。使用普通 Ninja / Makefile 生成器时，可执行文件默认输出到 `build/src/Compiler`；在 Windows 上对应为 `build/src/Compiler.exe`。
 
-```powershell
+```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release
+cmake --build build
 ```
 
 默认运行方式：
 
-```powershell
-.\bin\Compiler.exe testfile.txt lexer.txt error.txt ir.txt mips.txt
+```bash
+./build/src/Compiler testfile.txt lexer.txt error.txt ir.txt mips.txt
 ```
 
-调试输出由 [src/config.h](src/config.h) 控制。Release 默认输出错误和 MIPS；Debug 下可以额外打开 IR、词法、语法或 stdout 输出。
+调试输出由 [src/config.h](src/config.h) 和 CMake 选项控制。默认输出错误和 MIPS；需要额外打开 `MY_DEBUG` 下的 IR、词法、语法或 stdout 输出时，配置时加入：
+
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCOMPILER_DEBUG_OUTPUT=ON
+```
+
+常见编译警告由 `COMPILER_ENABLE_WARNINGS` 控制，默认开启。
 
 ## 前端设计
 

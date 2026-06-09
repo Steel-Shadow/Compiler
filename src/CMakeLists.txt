@@ -1,20 +1,29 @@
-#aux_source_directory(${PROJECT_SOURCE_DIR}/include INCLUDE_SOURCES)
-
-SET(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/bin)
-
-# only for show *.h in IDE
-file(GLOB_RECURSE HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/*.h)
-
-# all *.c *.cpp files in src
-file(GLOB_RECURSE SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/*.c ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
-add_executable(
-        ${PROJECT_NAME}
-
-        ${HEADERS}
-        ${SOURCES}
-        #        ${INCLUDE_SOURCES}
+file(GLOB_RECURSE COMPILER_SOURCES CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
 )
 
-# include *.h
-target_include_directories(${PROJECT_NAME} PRIVATE .)
-#target_include_directories(${PROJECT_NAME} PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_executable(${PROJECT_NAME} ${COMPILER_SOURCES})
+
+target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_17)
+set_target_properties(${PROJECT_NAME}
+        PROPERTIES
+        CXX_EXTENSIONS OFF
+        OUTPUT_NAME "Compiler"
+)
+
+if (COMPILER_DEBUG_OUTPUT)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE MY_DEBUG)
+endif ()
+
+target_include_directories(${PROJECT_NAME}
+        PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
+if (COMPILER_ENABLE_WARNINGS)
+    if (MSVC)
+        target_compile_options(${PROJECT_NAME} PRIVATE /W4)
+    else ()
+        target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wpedantic)
+    endif ()
+endif ()
