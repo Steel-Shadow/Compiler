@@ -40,7 +40,7 @@ struct FuncFParams {
 
     static std::unique_ptr<FuncFParams> parse();
 
-    std::vector<Param> getParameters() const;
+    Params getParameters() const;
 };
 
 //FuncDef → FuncType Ident '(' [FuncFParams] ')' Block

@@ -10,15 +10,30 @@
 
 using namespace Parser;
 
+namespace {
 bool canStartFuncFParam(LexType type) {
     return type == LexType::INTTK || type == LexType::CHARTK;
 }
+
+bool endsWithReturn(const Block &block) {
+    const auto &items = block.getBlockItems();
+    return !items.empty() && dynamic_cast<const ReturnStmt *>(items.back().get()) != nullptr;
+}
+
+void checkFinalReturn(const Block &block, Type returnType) {
+    if (returnType == Type::Void || endsWithReturn(block)) {
+        return;
+    }
+    Error::raise('g', Block::lastRow);
+}
+} // namespace
 
 // const array can't be param
 std::unique_ptr<FuncDef> FuncDef::parse() {
     auto n = std::make_unique<FuncDef>();
 
     n->funcType = FuncType::parse();
+    const Type returnType = n->funcType->getType();
 
     int row = Lexer::curRow;
     n->ident = Ident::parse();
@@ -28,7 +43,7 @@ std::unique_ptr<FuncDef> FuncDef::parse() {
 
     SymTab::deepIn();
 
-    std::vector<Param> params{};
+    Params params{};
 
     singleLex(LexType::LPARENT);
     if (canStartFuncFParam(Lexer::curLexType)) {
@@ -37,20 +52,13 @@ std::unique_ptr<FuncDef> FuncDef::parse() {
     }
     singleLex(LexType::RPARENT, row);
 
-    SymTab::add(n->ident, Symbol(n->funcType->getType(), params), SymTab::cur->getPrev());
+    SymTab::add(n->ident, std::make_unique<FuncSymbol>(returnType, std::move(params)), SymTab::currentParent());
 
-    Stmt::retType = n->funcType->getType();
-    Stmt::retVoid = Stmt::retType == Type::Void;
+    Stmt::retType = returnType;
+    Stmt::retVoid = returnType == Type::Void;
     n->block = Block::parse();
 
-    if (!Stmt::retVoid) {
-        if (n->block->getBlockItems().empty()
-            || !dynamic_cast<ReturnStmt *>(n->block->getBlockItems().back().get())) {
-            // In fact, we should check "return;"
-            // But it's not included in our work.
-            Error::raise('g', Block::lastRow);
-        }
-    }
+    checkFinalReturn(*n->block, returnType);
 
     SymTab::deepOut(); // FuncDef
     output(AST::FuncDef);
@@ -73,13 +81,7 @@ std::unique_ptr<MainFuncDef> MainFuncDef::parse() {
     Stmt::retVoid = false;
     n->block = Block::parse();
 
-    if (!Stmt::retVoid) {
-        if (n->block->getBlockItems().empty() || !dynamic_cast<ReturnStmt *>(n->block->getBlockItems().back().get())) {
-            // In fact, we should check "return;"
-            // But it's not included in our work.
-            Error::raise('g', Block::lastRow);
-        }
-    }
+    checkFinalReturn(*n->block, Type::Int);
 
     SymTab::deepOut(); // MainFuncDef
     output(AST::MainFuncDef);
@@ -89,7 +91,7 @@ std::unique_ptr<MainFuncDef> MainFuncDef::parse() {
 std::unique_ptr<IR::Function> MainFuncDef::genIR() const {
     using namespace IR;
     auto main = std::make_unique<Function>(
-            "main", Type::Int, std::vector<Param>());
+            "main", Type::Int, Params());
 
     BasicBlocks bBlocks;
     bBlocks.emplace_back(std::make_unique<BasicBlock>("main", true));
@@ -135,12 +137,12 @@ std::unique_ptr<FuncFParams> FuncFParams::parse() {
     return n;
 }
 
-std::vector<Param> FuncFParams::getParameters() const {
-    std::vector<Param> params;
+Params FuncFParams::getParameters() const {
+    Params params;
     params.reserve(funcFParams.size());
     for (auto &i: funcFParams) {
-        auto sym = SymTab::find(i->ident);
-        params.emplace_back(i->ident, sym);
+        auto *sym = SymTab::find(i->ident)->asParam();
+        params.emplace_back(i->ident, sym->getType(), sym->getDims());
     }
     return params;
 }
@@ -173,9 +175,9 @@ std::unique_ptr<FuncFParam> FuncFParam::parse() {
     }
 
     if (n->dims.empty()) {
-        SymTab::add(n->getId(), Symbol(toType(n->type->type), std::vector<int>{}));
+        SymTab::add(n->getId(), std::make_unique<ParamSymbol>(toType(n->type->type), std::vector<int>{}));
     } else {
-        SymTab::add(n->getId(), Symbol(valueToPtr(toType(n->type->type)), n->getDims()));
+        SymTab::add(n->getId(), std::make_unique<ParamSymbol>(valueToPtr(toType(n->type->type)), n->getDims()));
     }
     output(AST::FuncFParam);
     return n;
@@ -210,8 +212,8 @@ std::unique_ptr<FuncRParams> FuncRParams::parse() {
 
 std::unique_ptr<IR::Function> FuncDef::genIR() {
     using namespace IR;
-    auto functionSymbol = SymTab::find(ident);
-    auto function = std::make_unique<Function>(ident, functionSymbol->type, functionSymbol->params);
+    auto *functionSymbol = SymTab::find(ident)->asFunc();
+    auto function = std::make_unique<Function>(ident, functionSymbol->getType(), functionSymbol->getParams());
 
     BasicBlocks bBlocks;
     Function::idAllocator = 0;

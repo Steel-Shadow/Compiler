@@ -5,74 +5,86 @@
 #ifndef COMPILER_SYMBOL_H
 #define COMPILER_SYMBOL_H
 
-#include "frontend/lexer/LexType.h"
+#include "common/Type.h"
+
 #include <string>
 #include <vector>
 
 
-struct Symbol;
+class ObjectSymbol;
+class ValueSymbol;
+class ParamSymbol;
+class FuncSymbol;
 
-using Param = std::pair<std::string, Symbol *>;
+class Symbol {
+public:
+    virtual ~Symbol() = default;
 
-enum class SymType {
-    // const var
-    Value,
+    const ObjectSymbol *asObject() const;
+    ObjectSymbol *asObject();
+    const ValueSymbol *asValue() const;
+    ValueSymbol *asValue();
+    const ParamSymbol *asParam() const;
+    ParamSymbol *asParam();
+    const FuncSymbol *asFunc() const;
+    FuncSymbol *asFunc();
+    Type getType() const;
 
-    Func,
-    Param
-};
+protected:
+    explicit Symbol(Type type);
 
-enum class Type {
-    Void,
-    Int,
-    Char,
-    IntPtr,
-    CharPtr,
-};
-
-Type toType(LexType type);
-
-int sizeOfType(Type type);
-Type ptrToValue(Type type);
-Type valueToPtr(Type type);
-bool isPtrType(Type type);
-bool isBasicType(Type type);
-
-// all information in a Symbol (also redundant info)
-// use SymType type to distinguish
-struct Symbol {
-    // Value -> a | a[...] | a[...][...]
-    // Func -> func
-    // Param -> p | p[] | p[][...]
-    SymType symType;
-
-    // Value's type | Func's return type
+private:
     Type type;
-
-    // value & array. dims also share for param
-    bool cons{false}; // const | var
-    bool statik{false}; // static local var
-    std::string storageName; // actual global label for static local var
-    std::vector<int> dims; // At most 2 dimensions in our work.
-    std::vector<int> initVal; // for const Value
-
-    // func
-    std::vector<Param> params;
-
-    // const var
-    Symbol(bool cons,
-           Type type,
-           const std::vector<int> &dims,
-           const std::vector<int> &initVal,
-           bool statik = false,
-           std::string storageName = "");
-    // func
-    Symbol(Type reType, const std::vector<Param> &params);
-    // param
-    explicit Symbol(Type type, std::vector<int> dims);
 };
 
-std::string getStorageName(const Symbol *symbol, const std::string &ident);
-int getStorageDepth(const Symbol *symbol, int lexicalDepth);
+class ObjectSymbol : public Symbol {
+public:
+    ObjectSymbol(Type type, std::vector<int> dims);
+
+    const std::vector<int> &getDims() const;
+    virtual bool storesAddress() const;
+
+protected:
+    std::vector<int> dims; // At most 2 dimensions in our work.
+};
+
+class ValueSymbol final : public ObjectSymbol {
+public:
+    ValueSymbol(bool cons,
+                Type type,
+                std::vector<int> dims,
+                std::vector<int> initVal,
+                bool statik = false,
+                std::string storageName = "");
+
+    bool isConst() const;
+    bool isStatic() const;
+    const std::string &getStaticStorageName() const;
+    const std::vector<int> &getInitVal() const;
+    void setInitVal(std::vector<int> values);
+
+private:
+    bool cons; // const | var
+    bool statik; // static local var
+    std::string storageName; // actual global label for static local var
+    std::vector<int> initVal; // for const Value
+};
+
+class ParamSymbol final : public ObjectSymbol {
+public:
+    ParamSymbol(Type type, std::vector<int> dims);
+
+    bool storesAddress() const override;
+};
+
+class FuncSymbol final : public Symbol {
+public:
+    FuncSymbol(Type returnType, Params params);
+
+    const Params &getParams() const;
+
+private:
+    Params params;
+};
 
 #endif

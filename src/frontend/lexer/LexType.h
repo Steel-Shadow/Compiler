@@ -5,6 +5,8 @@
 #ifndef COMPILER_NODETYPE_H
 #define COMPILER_NODETYPE_H
 
+#include "common/Type.h"
+
 #include <string>
 
 enum class LexType {
@@ -64,5 +66,6 @@ enum class LexType {
 };
 
 std::string toString(LexType type);
+Type toType(LexType type);
 
 #endif

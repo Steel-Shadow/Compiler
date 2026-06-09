@@ -182,10 +182,10 @@ GlobVar::GlobVar(bool cons, Type type, const std::vector<int> &dims) :
 
 Function::Function(std::string name,
                    Type returnType,
-                   const std::vector<Param> &params) :
+                   Params params) :
     name(std::move(name)),
     returnType(returnType),
-    params(params) {
+    params(std::move(params)) {
     idAllocator = 0;
 }
 
@@ -247,7 +247,7 @@ Type Function::getReturnType() const {
     return returnType;
 }
 
-std::vector<Param> Function::getParams() const {
+const Params &Function::getParams() const {
     return params;
 }
 
@@ -276,17 +276,20 @@ Var::Var(std::string name,
          bool cons,
          const std::vector<int> &dims,
          Type type,
-         SymType symType) :
+         bool storesAddress) :
     name(std::move(name)),
     depth(depth),
     cons(cons),
     dims(dims),
-    type(type), symType(symType) {}
+    type(type),
+    storesAddress(storesAddress) {}
 
 Var::Var(std::string name, int depth) :
     name(std::move(name)),
     depth(depth),
-    cons(false), type(Type::Int) {}
+    cons(false),
+    type(Type::Int),
+    storesAddress(false) {}
 
 bool IR::operator==(const Var &lhs, const Var &rhs) {
     return lhs.name == rhs.name
@@ -337,40 +340,6 @@ ConstVal::ConstVal(int value, Type type) :
 
 std::string ConstVal::toString() const {
     return std::to_string(value);
-}
-
-Op IR::LexTypeToIROp(LexType n) {
-    switch (n) {
-        case LexType::PLUS:
-            return Op::Add;
-        case LexType::MINU:
-            return Op::Sub;
-        case LexType::MULT:
-            return Op::Mul;
-        case LexType::DIV:
-            return Op::Div;
-        case LexType::MOD:
-            return Op::Mod;
-        case LexType::AND:
-            return Op::And;
-        case LexType::OR:
-            return Op::Or;
-        case LexType::LEQ:
-            return Op::Leq;
-        case LexType::LSS:
-            return Op::Lss;
-        case LexType::GEQ:
-            return Op::Geq;
-        case LexType::GRE:
-            return Op::Gre;
-        case LexType::EQL:
-            return Op::Eql;
-        case LexType::NEQ:
-            return Op::Neq;
-        default:
-            Error::raise("Bad IR Operator");
-            return Op::Empty;
-    }
 }
 
 Str::Str() {

@@ -10,7 +10,6 @@
 #include <list>
 #include <memory>
 #include <set>
-#include <stack>
 #include <string>
 #include <unordered_map>
 
@@ -22,34 +21,36 @@ class SymTab {
     std::vector<std::unique_ptr<SymTab>> next; // next SymTable
 
     // Ident to Symbol
-    std::unordered_map<std::string, Symbol> symbols;
+    std::unordered_map<std::string, std::unique_ptr<Symbol>> symbols;
 
     int depth;
 
-    static std::list<SymTab *> symTabs;
-
-public:
     static SymTab *cur;
     static SymTab global;
+    static std::list<SymTab *> symTabs;
+    static std::vector<std::set<std::pair<std::string, int>>> generatedVars;
+    static std::vector<ValueSymbol *> staticVars;
 
-    static std::vector<std::set<std::pair<std::string, int>>> knownVars;
-    static std::vector<Symbol *> staticVars;
-
+public:
     explicit SymTab(SymTab *prev);
+
+    static void resetToGlobal();
+    static int currentDepth();
+    static SymTab *currentParent();
 
     static bool reDefine(const std::string &ident);
 
     static Symbol *find(const std::string &ident);
     static std::pair<Symbol *, int> findInGen(const std::string &ident);
 
-    // find depth of Symbol from current SymTab
-    // return -1 if not found
-    static int findDepth(const std::string &ident);
-
     // no effect if reDefine(ident)
-    static void add(const std::string &ident, Symbol &&symbol, SymTab *where = cur);
+    static void add(const std::string &ident, std::unique_ptr<Symbol> symbol, SymTab *where = cur);
 
-    static const std::vector<Symbol *> &getStaticVars();
+    static void enterGeneratedVarScope();
+    static void leaveGeneratedVarScope();
+    static void recordGeneratedVar(const std::string &ident, int depth);
+
+    static const std::vector<ValueSymbol *> &getStaticVars();
 
     static void addBuiltins();
 
@@ -58,15 +59,11 @@ public:
 
     static void deepOut();
 
-    SymTab *getPrev() const;
-
     // breadth-first search
     static void iterIn();
     static void iterOut();
 
     int getDepth() const;
-
-    // std::queue<SymTab *> dfs();
 };
 
 

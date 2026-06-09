@@ -43,19 +43,19 @@ std::unique_ptr<IR::Module> CompUnit::genIR() const {
     auto module = std::make_unique<Module>("Write by Steel Shadow");
 
     // maybe redundant, but still set it for safety
-    SymTab::cur = &SymTab::global;
-    SymTab::knownVars.emplace_back();
+    SymTab::resetToGlobal();
+    SymTab::enterGeneratedVarScope();
     for (auto &decl: decls) {
         for (auto &def: decl->getDefs()) {
-            auto sym = SymTab::find(def->ident);
+            auto *sym = SymTab::find(def->ident)->asValue();
 
-            auto globVar = GlobVar(sym->cons, sym->type, sym->dims, sym->initVal);
-            SymTab::knownVars.back().emplace(def->ident, 0);
+            auto globVar = GlobVar(sym->isConst(), sym->getType(), sym->getDims(), sym->getInitVal());
+            SymTab::recordGeneratedVar(def->ident, 0);
             module->addGlobVar(def->ident, globVar);
         }
     }
     for (auto *sym: SymTab::getStaticVars()) {
-        module->addGlobVar(sym->storageName, GlobVar(sym->cons, sym->type, sym->dims, sym->initVal));
+        module->addGlobVar(sym->getStaticStorageName(), GlobVar(sym->isConst(), sym->getType(), sym->getDims(), sym->getInitVal()));
     }
 
     for (auto &funcDef: funcDefs) {

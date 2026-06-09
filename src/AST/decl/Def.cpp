@@ -3,6 +3,7 @@
 //
 #include "Def.h"
 
+#include "AST/IRGenUtil.h"
 #include "Decl.h"
 #include "errorHandler/Error.h"
 #include "frontend/parser/Parser.h"
@@ -49,10 +50,11 @@ std::unique_ptr<Def> Def::parse(bool cons, Type type, bool statik) {
         size *= i;
     }
 
-    Symbol *declaredSymbol = nullptr;
+    ValueSymbol *declaredValue = nullptr;
     if (!redefined) {
-        SymTab::add(n->ident, Symbol(n->cons, type, dims, std::vector<int>(size), n->statik, storageName));
-        declaredSymbol = SymTab::find(n->ident);
+        auto symbol = std::make_unique<ValueSymbol>(n->cons, type, dims, std::vector<int>(size), n->statik, storageName);
+        declaredValue = symbol.get();
+        SymTab::add(n->ident, std::move(symbol));
     }
 
     if (cons || Lexer::curLexType == LexType::ASSIGN) {
@@ -83,7 +85,7 @@ std::unique_ptr<Def> Def::parse(bool cons, Type type, bool statik) {
         }
     }
 
-    if (declaredSymbol && (cons || statik || SymTab::cur->getDepth() == 0)) {
+    if (declaredValue && (cons || statik || SymTab::currentDepth() == 0)) {
         if (n->initVal) {
             auto values = n->initVal->evaluate();
             if (values.size() < size) {
@@ -96,12 +98,12 @@ std::unique_ptr<Def> Def::parse(bool cons, Type type, bool statik) {
                     value &= 0xFF;
                 }
             }
-            *declaredSymbol = Symbol(n->cons, type, dims, values, n->statik, storageName);
+            declaredValue->setInitVal(std::move(values));
         } else {
-            *declaredSymbol = Symbol(n->cons, type, dims, std::vector<int>(size), n->statik, storageName);
+            declaredValue->setInitVal(std::vector<int>(size));
         }
-    } else if (declaredSymbol) {
-        *declaredSymbol = Symbol(n->cons, type, dims, {}, n->statik);
+    } else if (declaredValue) {
+        declaredValue->setInitVal({});
     }
 
     if (cons) {
@@ -115,15 +117,12 @@ std::unique_ptr<Def> Def::parse(bool cons, Type type, bool statik) {
 void Def::genIR(IR::BasicBlocks &bBlocks, Type type) const {
     using namespace IR;
 
-    auto var = std::make_unique<Var>(
-            getStorageName(SymTab::find(ident), ident),
-            getStorageDepth(SymTab::find(ident), SymTab::cur->getDepth()),
-            cons,
-            SymTab::find(ident)->dims,
-            type);
+    auto symbol = SymTab::find(ident);
+    const int depth = SymTab::currentDepth();
+    auto var = makeIRVar(symbol, ident, depth, type);
     auto pVar = var.get();
 
-    SymTab::knownVars.back().emplace(ident, SymTab::cur->getDepth());
+    SymTab::recordGeneratedVar(ident, depth);
     if (statik) {
         return;
     }

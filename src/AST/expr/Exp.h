@@ -5,18 +5,26 @@
 #ifndef COMPILER_EXP_H
 #define COMPILER_EXP_H
 
-#include "errorHandler/Error.h"
 #include "frontend/lexer/LexType.h"
-#include "frontend/symTab/Symbol.h"
-#include "frontend/symTab/SymTab.h"
 #include "middle/IR.h"
 
 
 #include <memory>
+#include <string>
 #include <vector>
 
+class Symbol;
+class FuncSymbol;
 struct FuncRParams;
 struct Exp;
+
+IR::Op lexTypeToIROp(LexType type);
+bool opProducesInt(LexType type);
+Type resolveMultiExpType(Type firstType,
+                         size_t firstRemainingRank,
+                         const std::vector<Type> &elementTypes,
+                         const std::vector<size_t> &elementRemainingRanks,
+                         const std::vector<LexType> &ops);
 
 struct BaseUnaryExp {
     virtual ~BaseUnaryExp() = default;
@@ -59,6 +67,8 @@ struct LVal : public PrimaryExp {
     Type getType() override;
 };
 
+size_t remainingRankOf(LVal *lVal);
+
 // UnaryExp → PrimaryExp | Ident '(' [FuncRParams] ')' | UnaryOp UnaryExp
 // change syntax to
 // UnaryExp → {UnaryOp} ( PrimaryExp | Ident '(' [FuncRParams] ')' )
@@ -91,7 +101,7 @@ struct FuncCall : public BaseUnaryExp {
 
     static std::unique_ptr<FuncCall> parse();
 
-    static void checkParams(const std::unique_ptr<FuncCall> &n, int row, const Symbol *funcSym);
+    static void checkParams(const std::unique_ptr<FuncCall> &n, int row, const FuncSymbol *funcSym);
 
     std::unique_ptr<IR::Temp> genIR(IR::BasicBlocks &bBlocks) override;
 
@@ -150,13 +160,12 @@ struct MultiExp {
         for (size_t i = 0; i < ops.size(); ++i) {
             auto t = elements[i]->genIR(bBlocks);
             Type resultType = ptrToValue(lastRes->type);
-            if (ops[i] == LexType::LSS || ops[i] == LexType::GRE || ops[i] == LexType::LEQ || ops[i] == LexType::GEQ
-                || ops[i] == LexType::EQL || ops[i] == LexType::NEQ || ops[i] == LexType::AND || ops[i] == LexType::OR) {
+            if (opProducesInt(ops[i])) {
                 resultType = Type::Int;
             }
             auto res = std::make_unique<Temp>(resultType);
             bBlocks.back()->addInst(Inst(
-                    LexTypeToIROp(ops[i]),
+                    lexTypeToIROp(ops[i]),
                     std::make_unique<Temp>(*res),
                     std::move(lastRes),
                     std::move(t)));
@@ -187,39 +196,17 @@ struct MultiExp {
     }
 
     Type getType() {
-        auto remainingRank = [](const auto *exp) -> size_t {
-            auto lVal = exp->getLVal();
-            if (!lVal) {
-                return 0;
-            }
-            auto sym = SymTab::find(lVal->getIdent());
-            if (!sym || sym->symType == SymType::Func || sym->dims.size() <= lVal->getRank()) {
-                return 0;
-            }
-            return sym->dims.size() - lVal->getRank();
-        };
-
-        Type type = first->getType();
-        bool typeMismatch = false;
-        for (size_t i = 0; i < elements.size(); ++i) {
-            Type elementType = elements[i]->getType();
-            if (remainingRank(first.get()) > 0 || remainingRank(elements[i].get()) > 0
-                || type == Type::Void || elementType == Type::Void
-                || isPtrType(type) || isPtrType(elementType)
-                || elementType != type) {
-                typeMismatch = true;
-            }
+        Type firstType = first->getType();
+        size_t firstRemainingRank = remainingRankOf(first->getLVal());
+        std::vector<Type> elementTypes;
+        std::vector<size_t> elementRemainingRanks;
+        elementTypes.reserve(elements.size());
+        elementRemainingRanks.reserve(elements.size());
+        for (const auto &element: elements) {
+            elementTypes.push_back(element->getType());
+            elementRemainingRanks.push_back(remainingRankOf(element->getLVal()));
         }
-        if (typeMismatch) {
-            Error::raise('e');
-            return Type::Void;
-        }
-        if (!ops.empty()
-            && (ops.back() == LexType::LSS || ops.back() == LexType::GRE || ops.back() == LexType::LEQ || ops.back() == LexType::GEQ
-                || ops.back() == LexType::EQL || ops.back() == LexType::NEQ || ops.back() == LexType::AND || ops.back() == LexType::OR)) {
-            return Type::Int;
-        }
-        return type;
+        return resolveMultiExpType(firstType, firstRemainingRank, elementTypes, elementRemainingRanks, ops);
     }
 };
 
@@ -285,6 +272,10 @@ struct Exp {
     // get the indexRank of LVal
     // 0 if the Exp is not a single LVal
     size_t getRank() const;
+
+    // get remaining array rank after indexing
+    // 0 if the Exp is not a single array LVal
+    size_t getRemainingRank() const;
 
     // get ident of LVal or FuncCall
     // if the Exp is not a single LVal or FuncCall, return ""

@@ -8,7 +8,6 @@
 #include <utility>
 
 #include "errorHandler/Error.h"
-#include "frontend/symTab/SymTab.h"
 #include "Memory.h"
 #include "Register.h"
 
@@ -209,7 +208,7 @@ void loadVarAddress(Register target, const IR::Var *var, const IR::Element *offs
         if (dynamicOffset) {
             assemblies.push_back(std::make_unique<R_Inst>(Op::addu, target, target, getReg(dynamicOffset)));
         }
-    } else if (var->symType == SymType::Param && !var->dims.empty()) {
+    } else if (var->storesAddress) {
         assemblies.push_back(std::make_unique<I_imm_Inst>(Op::lw, target, Register::sp, -getStackOffset(var)));
         if (constOffset != 0) {
             assemblies.push_back(std::make_unique<I_imm_Inst>(Op::addiu, target, target, constOffset));
@@ -265,7 +264,7 @@ void MIPS::Store(const IR::Inst &inst) {
         if (var->depth == 0) {
             assemblies.push_back(std::make_unique<I_label_Inst>(op, getReg(value), Register::none, Label(var->name), arrayOffset));
         } else {
-            if (var->symType == SymType::Param && !var->dims.empty()) {
+            if (var->storesAddress) {
                 assemblies.push_back(std::make_unique<I_imm_Inst>(Op::lw, Register::fp, Register::sp, -getStackOffset(var)));
                 assemblies.push_back(std::make_unique<I_imm_Inst>(op, getReg(value), Register::fp, arrayOffset));
             } else {
@@ -285,7 +284,7 @@ void MIPS::StoreDynamic(const IR::Inst &inst) {
     if (var->depth == 0) {
         assemblies.push_back(std::make_unique<I_label_Inst>(storeOp(var->type), getReg(value), getReg(offset), Label(var->name)));
     } else {
-        if (var->symType == SymType::Param && !var->dims.empty()) {
+        if (var->storesAddress) {
             assemblies.push_back(std::make_unique<I_imm_Inst>(Op::lw, Register::fp, Register::sp, -getStackOffset(var)));
             assemblies.push_back(std::make_unique<R_Inst>(Op::addu, Register::fp, Register::fp, getReg(offset)));
             assemblies.push_back(std::make_unique<I_imm_Inst>(storeOp(var->type), getReg(value), Register::fp, 0));
@@ -504,7 +503,7 @@ void MIPS::Load(const IR::Inst &inst) {
         if (var->depth == 0) {
             assemblies.push_back(std::make_unique<I_label_Inst>(loadOp(var->type), regRes, Register::none, Label(var->name), arrayOffset));
         } else {
-            if (var->symType == SymType::Param && !var->dims.empty()) {
+            if (var->storesAddress) {
                 if (!inst.arg2) {
                     assemblies.push_back(std::make_unique<I_imm_Inst>(Op::lw, regRes, Register::sp, -getStackOffset(var)));
                 } else {
@@ -638,7 +637,7 @@ void MIPS::PushAddressParam(const IR::Inst &inst) {
     } else {
         if (auto constOffset = dynamic_cast<IR::ConstVal *>(inst.arg2.get())) {
             // int offset = constOffset->value * wordSize - getStackOffset(varAddr);
-            if (varAddr->symType == SymType::Param && !varAddr->dims.empty()) {
+            if (varAddr->storesAddress) {
                 assemblies.push_back(std::make_unique<I_imm_Inst>(Op::lw, Register::fp, Register::sp, -getStackOffset(varAddr)));
                 assemblies.push_back(std::make_unique<I_imm_Inst>(Op::addiu, Register::fp, Register::fp, elementByteOffset(varAddr->type, constOffset->value)));
             } else {
@@ -646,7 +645,7 @@ void MIPS::PushAddressParam(const IR::Inst &inst) {
                                                                   elementByteOffset(varAddr->type, constOffset->value) - getStackOffset(varAddr)));
             }
         } else {
-            if (varAddr->symType == SymType::Param && !varAddr->dims.empty()) {
+            if (varAddr->storesAddress) {
                 auto dynamicOffset = dynamic_cast<IR::Temp *>(inst.arg2.get());
                 assemblies.push_back(std::make_unique<I_imm_Inst>(Op::lw, Register::fp, Register::sp, -getStackOffset(varAddr)));
                 assemblies.push_back(std::make_unique<R_Inst>(Op::addu, Register::fp, Register::fp, getReg(dynamicOffset)));
@@ -783,7 +782,7 @@ void MIPS::LoadDynamic(const IR::Inst &inst) {
     if (var->depth == 0) {
         assemblies.push_back(std::make_unique<I_label_Inst>(loadOp(var->type), regValue, regOffset, Label(var->name)));
     } else {
-        if (var->symType == SymType::Param && !var->dims.empty()) {
+        if (var->storesAddress) {
             assemblies.push_back(std::make_unique<I_imm_Inst>(Op::lw, Register::fp, Register::sp, -getStackOffset(var)));
             assemblies.push_back(std::make_unique<R_Inst>(Op::addu, Register::fp, Register::fp, regOffset));
             assemblies.push_back(std::make_unique<I_imm_Inst>(loadOp(var->type), regValue, Register::fp, 0));

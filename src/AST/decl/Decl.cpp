@@ -58,9 +58,9 @@ void Decl::genIR(IR::BasicBlocks &bBlocks) {
 }
 
 int Def::getArraySize() const {
-    auto symbol = SymTab::find(ident);
+    auto *symbol = SymTab::find(ident)->asObject();
     int size = 1;
-    for (const auto &i: symbol->dims) {
+    for (const auto &i: symbol->getDims()) {
         size *= i;
     }
     return size;

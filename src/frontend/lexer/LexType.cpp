@@ -109,3 +109,17 @@ std::string toString(LexType type) {
             return "";
     }
 }
+
+Type toType(LexType type) {
+    switch (type) {
+        case LexType::INTTK:
+            return Type::Int;
+        case LexType::CHARTK:
+            return Type::Char;
+        case LexType::VOIDTK:
+            return Type::Void;
+        default:
+            Error::raise("Bad Btype to IR");
+            return Type::Void;
+    }
+}

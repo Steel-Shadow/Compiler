@@ -3,6 +3,7 @@
 //
 #include "AST/decl/Decl.h"
 #include "AST/func/Func.h"
+#include "AST/IRGenUtil.h"
 #include "backend/Register.h"
 #include "errorHandler/Error.h"
 #include "Exp.h"
@@ -55,6 +56,7 @@ std::unique_ptr<LVal> LVal::parse() {
 
     n->ident = Ident::parse();
     Symbol *symbol = SymTab::find(n->ident);
+    const auto *object = symbol ? symbol->asObject() : nullptr;
     if (!symbol) {
         Error::raise('c');
     }
@@ -66,7 +68,7 @@ std::unique_ptr<LVal> LVal::parse() {
         if (index->getType() != Type::Int) {
             Error::raise('e', row);
         }
-        if (symbol && (symbol->symType == SymType::Func || n->dims.size() + 1 > symbol->dims.size())) {
+        if (symbol && (!object || n->dims.size() + 1 > object->getDims().size())) {
             Error::raise('e', row);
         }
         n->dims.push_back(std::move(index));
@@ -88,17 +90,12 @@ std::string LVal::getIdent() {
 std::unique_ptr<IR::Temp> LVal::genIR(IR::BasicBlocks &bBlocks) {
     using namespace IR;
     auto [symbol, depth] = SymTab::findInGen(ident);
-    auto var = std::make_unique<IR::Var>(
-            getStorageName(symbol, ident),
-            getStorageDepth(symbol, depth),
-            symbol->cons,
-            symbol->dims,
-            symbol->type,
-            symbol->symType);
+    const auto *object = symbol->asObject();
+    auto var = makeIRVar(symbol, ident, depth);
 
-    auto res = std::make_unique<Temp>(ptrToValue(symbol->type));
+    auto res = std::make_unique<Temp>(ptrToValue(symbol->getType()));
 
-    if (isPtrType(symbol->type)) {
+    if (isPtrType(symbol->getType())) {
         auto addr = std::make_unique<Temp>(Type::Int);
         bBlocks.back()->addInst(Inst(IR::Op::Load,
                                      std::make_unique<Temp>(*addr),
@@ -106,7 +103,7 @@ std::unique_ptr<IR::Temp> LVal::genIR(IR::BasicBlocks &bBlocks) {
                                      nullptr));
         int constOffset;
         std::unique_ptr<Temp> dynamicOffset;
-        bool getNonConstIndex = getOffset(constOffset, dynamicOffset, bBlocks, symbol->dims, symbol->type);
+        bool getNonConstIndex = getOffset(constOffset, dynamicOffset, bBlocks, object->getDims(), symbol->getType());
         if (getNonConstIndex) {
             auto addrElem = std::make_unique<Temp>(Type::Int);
             bBlocks.back()->addInst(Inst(IR::Op::Add,
@@ -133,7 +130,7 @@ std::unique_ptr<IR::Temp> LVal::genIR(IR::BasicBlocks &bBlocks) {
         } else {
             int constOffset;
             std::unique_ptr<Temp> dynamicOffset;
-            bool getNonConstIndex = getOffset(constOffset, dynamicOffset, bBlocks, symbol->dims, symbol->type);
+            bool getNonConstIndex = getOffset(constOffset, dynamicOffset, bBlocks, object->getDims(), symbol->getType());
             if (getNonConstIndex) {
                 bBlocks.back()->addInst(Inst(IR::Op::LoadDynamic,
                                              std::make_unique<Temp>(*res),
@@ -152,15 +149,16 @@ std::unique_ptr<IR::Temp> LVal::genIR(IR::BasicBlocks &bBlocks) {
 
 int LVal::evaluate() {
     auto sym = SymTab::find(ident);
+    auto *value = sym ? sym->asValue() : nullptr;
     if (sym == nullptr) {
         Error::raise("LVal not found in evaluate()");
         return 0;
-    } else if (!sym->cons) {
+    } else if (!value || !value->isConst()) {
         Exp::getNonConstValueInEvaluate = true;
         // Non-const LVal in evaluate()
         return 0;
-    } else if (sym->dims.empty()) {
-        return sym->initVal[0];
+    } else if (value->getDims().empty()) {
+        return value->getInitVal()[0];
     } else {
         Exp::getNonConstValueInEvaluate = true;
         // Const Array element in evaluate()
@@ -246,13 +244,14 @@ Type LVal::getType() {
     if (!sym) {
         return Type::Void;
     }
-    if (sym->symType == SymType::Func) {
+    auto *object = sym->asObject();
+    if (!object) {
         return Type::Void;
     }
-    if (isPtrType(sym->type) && !dims.empty()) {
-        return ptrToValue(sym->type);
+    if (isPtrType(object->getType()) && !dims.empty()) {
+        return ptrToValue(object->getType());
     }
-    return sym->type;
+    return object->getType();
 }
 
 std::unique_ptr<PrimaryExp> PrimaryExp::parse() {
@@ -484,10 +483,11 @@ std::unique_ptr<FuncCall> FuncCall::parse() {
     int row = Lexer::curRow;
     n->ident = Ident::parse();
 
-    Symbol *funcSym = SymTab::find(n->ident);
-    if (!funcSym) {
+    Symbol *symbol = SymTab::find(n->ident);
+    auto *funcSym = symbol ? symbol->asFunc() : nullptr;
+    if (!symbol) {
         Error::raise('c', row);
-    } else if (funcSym->symType != SymType::Func) {
+    } else if (!funcSym) {
         Error::raise('e', row);
     }
 
@@ -497,7 +497,7 @@ std::unique_ptr<FuncCall> FuncCall::parse() {
         n->funcRParams = FuncRParams::parse();
     }
 
-    if (funcSym && funcSym->symType == SymType::Func) {
+    if (funcSym) {
         checkParams(n, row, funcSym); // SymTab error handle
     }
 
@@ -505,24 +505,25 @@ std::unique_ptr<FuncCall> FuncCall::parse() {
     return n;
 }
 
-void FuncCall::checkParams(const std::unique_ptr<FuncCall> &n, int row, const Symbol *funcSym) {
+void FuncCall::checkParams(const std::unique_ptr<FuncCall> &n, int row, const FuncSymbol *funcSym) {
     if (n->funcRParams == nullptr) {
-        if (!funcSym->params.empty()) {
+        if (!funcSym->getParams().empty()) {
             Error::raise('d', row);
         }
         return;
     }
 
     auto &realParams = n->funcRParams->params;
+    const auto &formalParams = funcSym->getParams();
     // check number of realParams
-    if (realParams.size() != funcSym->params.size()) {
+    if (realParams.size() != formalParams.size()) {
         Error::raise('d', row);
     } else {
         // check type of params
         for (size_t i = 0; i < realParams.size(); ++i) {
             auto &rParam = realParams[i];
 
-            size_t formalRank = funcSym->params[i].second->dims.size();
+            size_t formalRank = formalParams[i].dims.size();
             size_t symRank = 0;
             bool invalidRank = false;
 
@@ -534,7 +535,7 @@ void FuncCall::checkParams(const std::unique_ptr<FuncCall> &n, int row, const Sy
             }
 
             // only consider value Type, no dimentions
-            if (ptrToValue(rParam->getType()) != ptrToValue(funcSym->params[i].second->type)) {
+            if (ptrToValue(rParam->getType()) != ptrToValue(formalParams[i].type)) {
                 Error::raise('e', row);
                 continue;
             }
@@ -543,14 +544,16 @@ void FuncCall::checkParams(const std::unique_ptr<FuncCall> &n, int row, const Sy
                 // rParam is Exp (neither LVal nor FuncCall)
                 symRank = 0;
             } else {
-                auto sym = SymTab::find(ident);
-                if (sym->symType == SymType::Func) {
+                auto *sym = SymTab::find(ident);
+                if (!sym) {
+                    invalidRank = true;
+                } else if (sym->asFunc()) {
                     // FuncCall
                     // void | int
-                    invalidRank = sym->type == Type::Void;
+                    invalidRank = sym->getType() == Type::Void;
                 } else {
                     // LVal
-                    symRank = sym->dims.size();
+                    symRank = sym->asObject()->getDims().size();
                 }
             }
 
@@ -563,17 +566,11 @@ void FuncCall::checkParams(const std::unique_ptr<FuncCall> &n, int row, const Sy
 
 std::unique_ptr<IR::Temp> FuncCall::genIR(IR::BasicBlocks &bBlocks) {
     using namespace IR;
-    auto funcSym = SymTab::find(ident);
+    auto *funcSym = SymTab::find(ident)->asFunc();
 
     auto makeVarFromLVal = [](LVal *lVal) {
         auto [symbol, depth] = SymTab::findInGen(lVal->ident);
-        return std::make_unique<Var>(
-                getStorageName(symbol, lVal->ident),
-                getStorageDepth(symbol, depth),
-                symbol->cons,
-                symbol->dims,
-                symbol->type,
-                symbol->symType);
+        return makeIRVar(symbol, lVal->ident, depth);
     };
 
     if (ident == "get_int" || ident == "get_char") {
@@ -581,10 +578,10 @@ std::unique_ptr<IR::Temp> FuncCall::genIR(IR::BasicBlocks &bBlocks) {
                                      nullptr,
                                      nullptr,
                                      nullptr));
-        auto temp = std::make_unique<Temp>(funcSym->type);
+        auto temp = std::make_unique<Temp>(funcSym->getType());
         bBlocks.back()->addInst(Inst(Op::NewMove,
                                      std::make_unique<Temp>(*temp),
-                                     std::make_unique<Temp>(-static_cast<int>(MIPS::Register::v0), funcSym->type),
+                                     std::make_unique<Temp>(-static_cast<int>(MIPS::Register::v0), funcSym->getType()),
                                      nullptr));
         return temp;
     }
@@ -607,7 +604,7 @@ std::unique_ptr<IR::Temp> FuncCall::genIR(IR::BasicBlocks &bBlocks) {
                 auto var = makeVarFromLVal(lVal);
                 int constOffset = 0;
                 std::unique_ptr<Temp> dynamicOffset;
-                bool getNonConstIndex = lVal->getOffset(constOffset, dynamicOffset, bBlocks, symbol->dims, symbol->type);
+                bool getNonConstIndex = lVal->getOffset(constOffset, dynamicOffset, bBlocks, symbol->asObject()->getDims(), symbol->getType());
                 bBlocks.back()->addInst(Inst(Op::PrintStr,
                                              nullptr,
                                              std::move(var),
@@ -626,7 +623,7 @@ std::unique_ptr<IR::Temp> FuncCall::genIR(IR::BasicBlocks &bBlocks) {
                 auto var = makeVarFromLVal(lVal);
                 int constOffset = 0;
                 std::unique_ptr<Temp> dynamicOffset;
-                bool getNonConstIndex = lVal->getOffset(constOffset, dynamicOffset, bBlocks, symbol->dims, symbol->type);
+                bool getNonConstIndex = lVal->getOffset(constOffset, dynamicOffset, bBlocks, symbol->asObject()->getDims(), symbol->getType());
                 auto maxLen = funcRParams->params[1]->genIR(bBlocks);
                 bBlocks.back()->addInst(Inst(Op::GetString,
                                              std::move(maxLen),
@@ -646,8 +643,8 @@ std::unique_ptr<IR::Temp> FuncCall::genIR(IR::BasicBlocks &bBlocks) {
             auto &rParam = funcRParams->params[i];
             auto name = rParam->getIdent();
 
-            auto symbol = SymTab::find(name); // LVal / FuncCall
-            size_t formalRank = funcSym->params[i].second->dims.size();
+            auto *symbol = SymTab::find(name); // LVal / FuncCall
+            size_t formalRank = funcSym->getParams()[i].dims.size();
 
             if (formalRank == 0) {
                 // single LVal (not array)
@@ -660,18 +657,12 @@ std::unique_ptr<IR::Temp> FuncCall::genIR(IR::BasicBlocks &bBlocks) {
             } else {
                 // array (pass param by address)
                 auto [paramSymbol, paramDepth] = SymTab::findInGen(name);
-                auto var = std::make_unique<Var>(
-                        getStorageName(paramSymbol, name),
-                        getStorageDepth(paramSymbol, paramDepth),
-                        symbol->cons,
-                        symbol->dims,
-                        symbol->type,
-                        symbol->symType);
+                auto var = makeIRVar(paramSymbol, name, paramDepth, symbol);
 
                 int constOffset;
                 std::unique_ptr<Temp> dynamicOffset;
                 bool getNonConstIndex = rParam->getLVal()->getOffset(
-                        constOffset, dynamicOffset, bBlocks, symbol->dims, symbol->type);
+                        constOffset, dynamicOffset, bBlocks, symbol->asObject()->getDims(), symbol->getType());
 
                 if (getNonConstIndex) {
                     bBlocks.back()->addInst(Inst(
@@ -696,11 +687,11 @@ std::unique_ptr<IR::Temp> FuncCall::genIR(IR::BasicBlocks &bBlocks) {
                                  nullptr));
     bBlocks.back()->addInst(Inst(Op::OutStack, nullptr, nullptr, nullptr));
 
-    if (funcSym->type == Type::Int || funcSym->type == Type::Char) {
-        auto temp = std::make_unique<Temp>(funcSym->type);
+    if (funcSym->getType() == Type::Int || funcSym->getType() == Type::Char) {
+        auto temp = std::make_unique<Temp>(funcSym->getType());
         bBlocks.back()->addInst(Inst(IR::Op::NewMove,
                                      std::make_unique<Temp>(*temp),
-                                     std::make_unique<Temp>(-static_cast<int>(MIPS::Register::v0), funcSym->type),
+                                     std::make_unique<Temp>(-static_cast<int>(MIPS::Register::v0), funcSym->getType()),
                                      nullptr));
         return temp;
     } else {
@@ -711,10 +702,11 @@ std::unique_ptr<IR::Temp> FuncCall::genIR(IR::BasicBlocks &bBlocks) {
 
 Type FuncCall::getType() {
     auto sym = SymTab::find(ident);
-    if (!sym || sym->symType != SymType::Func) {
+    auto *funcSym = sym ? sym->asFunc() : nullptr;
+    if (!funcSym) {
         return Type::Void;
     }
-    return sym->type;
+    return funcSym->getType();
 }
 
 const std::string &FuncCall::getIdent() const {

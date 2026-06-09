@@ -5,8 +5,7 @@
 #ifndef COMPILER_IR_H
 #define COMPILER_IR_H
 
-#include "frontend/lexer/LexType.h"
-#include "frontend/symTab/Symbol.h"
+#include "common/Type.h"
 
 #include <fstream>
 #include <memory>
@@ -117,9 +116,9 @@ struct Var : public Element {
     bool cons; // const | var
     std::vector<int> dims; // At most 2 dimensions in our work.
     Type type;
-    SymType symType = SymType::Value;
+    bool storesAddress; // array parameters store their base address in the stack slot
 
-    Var(std::string name, int depth, bool cons, const std::vector<int> &dims, Type type, SymType symType = SymType::Value);
+    Var(std::string name, int depth, bool cons, const std::vector<int> &dims, Type type, bool storesAddress = false);
     Var(std::string name, int depth);
 
     friend bool operator==(const Var &lhs, const Var &rhs);
@@ -212,7 +211,7 @@ using BasicBlocks = std::vector<std::unique_ptr<BasicBlock>>;
 class Function {
     std::string name;
     Type returnType;
-    std::vector<Param> params; // Param -> p | p[] | p[][...]
+    Params params; // ParamInfo -> p | p[] | p[][...]
     BasicBlocks basicBlocks;
 
 public:
@@ -220,7 +219,7 @@ public:
     // reset to 0 at start of Function
     static int idAllocator;
 
-    Function(std::string name, Type returnType, const std::vector<Param> &params);
+    Function(std::string name, Type returnType, Params params);
 
     void moveBasicBlocks(BasicBlocks &&bBlocks);
 
@@ -228,7 +227,7 @@ public:
 
     Type getReturnType() const;
 
-    std::vector<Param> getParams() const;
+    const Params &getParams() const;
 };
 
 // backend CodeGen should not rely on SymTab
@@ -272,7 +271,6 @@ public:
     void addGlobVar(std::string name, GlobVar globVar);
 };
 
-Op LexTypeToIROp(LexType n);
 } // namespace IR
 
 template<>

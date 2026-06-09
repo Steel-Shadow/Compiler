@@ -86,8 +86,8 @@ void MIPS::genMIPS(const IR::Module &module) {
         // set function's parameters to varToOffset
         // stack memory map explain is in markdown and Memory.h
         int offset = 0;
-        for (auto &[ident, sym]: func->getParams()) {
-            StackMemory::varToOffset.emplace(IR::Var(ident, 1, false, sym->dims, sym->type), -offset);
+        for (const auto &param: func->getParams()) {
+            StackMemory::varToOffset.emplace(IR::Var(param.name, 1, false, param.dims, param.type, !param.dims.empty()), -offset);
             offset += wordSize;
         }
 
