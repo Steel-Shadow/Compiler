@@ -72,6 +72,7 @@ struct Instruction {
     static Instruction retVoid();
     static Instruction call(std::string result, Type returnType, std::string callee, std::vector<Operand> args);
     static Instruction phi(std::string result, Type type, std::vector<PhiIncoming> incoming);
+    static Instruction getElementPtr(std::string result, Type elementType, Operand base, Operand index);
     static Instruction cast(std::string result, std::string op, Type targetType, Operand value);
     static Instruction makeComment(std::string text);
 
@@ -156,6 +157,7 @@ public:
     void emitStore(Operand value, Operand ptr);
     Operand emitBinary(const std::string &op, Type type, Operand lhs, Operand rhs, const std::string &hint = "tmp");
     Operand emitICmp(const std::string &predicate, Operand lhs, Operand rhs, const std::string &hint = "cmp");
+    Operand emitGetElementPtr(Type elementType, Operand base, Operand index, const std::string &hint = "elem");
     Operand emitCast(const std::string &op, Type targetType, Operand value, const std::string &hint = "cast");
     void emitBr(const std::string &target);
     void emitCondBr(Operand cond, const std::string &trueTarget, const std::string &falseTarget);

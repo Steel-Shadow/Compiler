@@ -192,6 +192,17 @@ Instruction Instruction::phi(std::string result, Type type, std::vector<PhiIncom
     return inst;
 }
 
+Instruction Instruction::getElementPtr(std::string result, Type elementType, Operand base, Operand index) {
+    Instruction inst;
+    inst.opcode = Opcode::GetElementPtr;
+    inst.result = std::move(result);
+    inst.type = "ptr";
+    inst.note = typeToIR(elementType);
+    inst.operands.push_back(std::move(base));
+    inst.operands.push_back(std::move(index));
+    return inst;
+}
+
 Instruction Instruction::cast(std::string result, std::string op, Type targetType, Operand value) {
     Instruction inst;
     inst.opcode = Opcode::Cast;
@@ -268,7 +279,7 @@ std::string Instruction::toString() const {
             }
             break;
         case Opcode::GetElementPtr:
-            out << result << " = getelementptr " << note;
+            out << result << " = getelementptr " << note << ", " << operands[0].typed() << ", " << operands[1].typed();
             break;
         case Opcode::Cast:
             out << result << " = " << op << " " << operands.front().typed() << " to " << type;
@@ -454,6 +465,12 @@ Operand IRBuilder::emitICmp(const std::string &predicate, Operand lhs, Operand r
     const std::string name = makeTemp(hint);
     block_->add(Instruction::icmp(name, predicate, std::move(lhs), std::move(rhs)));
     return Operand("i1", name);
+}
+
+Operand IRBuilder::emitGetElementPtr(Type elementType, Operand base, Operand index, const std::string &hint) {
+    const std::string name = makeTemp(hint);
+    block_->add(Instruction::getElementPtr(name, elementType, std::move(base), std::move(index)));
+    return Operand("ptr", name);
 }
 
 Operand IRBuilder::emitCast(const std::string &op, Type targetType, Operand value, const std::string &hint) {

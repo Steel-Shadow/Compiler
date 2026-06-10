@@ -162,7 +162,7 @@ private:
                 out_ << "  # TODO: lower phi " << inst.result << "\n";
                 break;
             case IR::Opcode::GetElementPtr:
-                out_ << "  # TODO: lower getelementptr " << inst.result << "\n";
+                emitGetElementPtr(inst);
                 break;
             case IR::Opcode::Cast:
                 emitCast(inst);
@@ -184,6 +184,8 @@ private:
     void loadOperand(const IR::Operand &operand, const std::string &reg) {
         if (operand.text.empty()) {
             out_ << "  move " << reg << ", $zero\n";
+        } else if (operand.type == "ptr") {
+            loadPointerAddress(operand, reg);
         } else if (isInteger(operand.text)) {
             out_ << "  li " << reg << ", " << operand.text << "\n";
         } else if (operand.text.front() == '@') {
@@ -200,6 +202,29 @@ private:
         }
     }
 
+    void loadPointerAddress(const IR::Operand &operand, const std::string &reg) {
+        if (operand.text.empty()) {
+            out_ << "  move " << reg << ", $zero\n";
+            return;
+        }
+        if (operand.text.front() == '@') {
+            out_ << "  la " << reg << ", " << stripPrefix(operand.text) << "\n";
+            return;
+        }
+        auto ptrSlot = frame_.pointerSlots.find(operand.text);
+        if (ptrSlot != frame_.pointerSlots.end()) {
+            out_ << "  addiu " << reg << ", $sp, " << ptrSlot->second << "\n";
+            return;
+        }
+        auto valueSlot = frame_.valueSlots.find(operand.text);
+        if (valueSlot != frame_.valueSlots.end()) {
+            out_ << "  lw " << reg << ", " << valueSlot->second << "($sp)\n";
+            return;
+        }
+        out_ << "  # unknown pointer " << operand.text << "\n";
+        out_ << "  move " << reg << ", $zero\n";
+    }
+
     void storeValue(const std::string &name, const std::string &reg) {
         auto it = frame_.valueSlots.find(name);
         if (it != frame_.valueSlots.end()) {
@@ -211,14 +236,12 @@ private:
         const auto &ptr = inst.operands.front();
         if (!ptr.text.empty() && ptr.text.front() == '@') {
             out_ << "  " << (inst.type == "i8" ? "lb" : "lw") << " $t0, " << stripPrefix(ptr.text) << "\n";
-        } else {
+        } else if (frame_.pointerSlots.find(ptr.text) != frame_.pointerSlots.end()) {
             auto it = frame_.pointerSlots.find(ptr.text);
-            if (it == frame_.pointerSlots.end()) {
-                out_ << "  # unknown load pointer " << ptr.text << "\n";
-                out_ << "  move $t0, $zero\n";
-            } else {
-                out_ << "  " << (inst.type == "i8" ? "lb" : "lw") << " $t0, " << it->second << "($sp)\n";
-            }
+            out_ << "  " << (inst.type == "i8" ? "lb" : "lw") << " $t0, " << it->second << "($sp)\n";
+        } else {
+            loadPointerAddress(ptr, "$t9");
+            out_ << "  " << (inst.type == "i8" ? "lb" : "lw") << " $t0, 0($t9)\n";
         }
         storeValue(inst.result, "$t0");
     }
@@ -228,14 +251,23 @@ private:
         const auto &ptr = inst.operands[1];
         if (!ptr.text.empty() && ptr.text.front() == '@') {
             out_ << "  " << (inst.operands[0].type == "i8" ? "sb" : "sw") << " $t0, " << stripPrefix(ptr.text) << "\n";
-        } else {
+        } else if (frame_.pointerSlots.find(ptr.text) != frame_.pointerSlots.end()) {
             auto it = frame_.pointerSlots.find(ptr.text);
-            if (it == frame_.pointerSlots.end()) {
-                out_ << "  # unknown store pointer " << ptr.text << "\n";
-            } else {
-                out_ << "  " << (inst.operands[0].type == "i8" ? "sb" : "sw") << " $t0, " << it->second << "($sp)\n";
-            }
+            out_ << "  " << (inst.operands[0].type == "i8" ? "sb" : "sw") << " $t0, " << it->second << "($sp)\n";
+        } else {
+            loadPointerAddress(ptr, "$t9");
+            out_ << "  " << (inst.operands[0].type == "i8" ? "sb" : "sw") << " $t0, 0($t9)\n";
         }
+    }
+
+    void emitGetElementPtr(const IR::Instruction &inst) {
+        loadPointerAddress(inst.operands[0], "$t0");
+        loadOperand(inst.operands[1], "$t1");
+        if (inst.note == "i32") {
+            out_ << "  sll $t1, $t1, 2\n";
+        }
+        out_ << "  addu $t2, $t0, $t1\n";
+        storeValue(inst.result, "$t2");
     }
 
     void emitBinary(const IR::Instruction &inst) {
@@ -317,8 +349,23 @@ private:
             out_ << "  syscall\n";
             return;
         }
-        if (inst.op == "put_string" || inst.op == "put_str" || inst.op == "get_string") {
-            out_ << "  # TODO: lower string builtin @" << inst.op << "\n";
+        if (inst.op == "put_string" || inst.op == "put_str") {
+            if (!inst.operands.empty()) {
+                loadOperand(inst.operands.front(), "$a0");
+            }
+            out_ << "  li $v0, 4\n";
+            out_ << "  syscall\n";
+            return;
+        }
+        if (inst.op == "get_string") {
+            if (!inst.operands.empty()) {
+                loadOperand(inst.operands[0], "$a0");
+            }
+            if (inst.operands.size() > 1) {
+                loadOperand(inst.operands[1], "$a1");
+            }
+            out_ << "  li $v0, 8\n";
+            out_ << "  syscall\n";
             return;
         }
 
@@ -392,6 +439,7 @@ void Generator::emitModule(const IR::Module &module, std::ostream &out) {
     }
     out << "\n.text\n";
     emitRuntimeStubs(out);
+    out << "  j main\n";
     for (const auto &function: module.functions) {
         emitFunction(*function, out);
     }

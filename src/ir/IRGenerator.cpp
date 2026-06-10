@@ -43,6 +43,7 @@ private:
     std::unordered_set<std::string> emittedStaticGlobals_;
     std::stack<std::string> breakTargets_;
     std::stack<std::string> continueTargets_;
+    int stringId_{0};
 
     static int arraySize(const std::vector<int> &dims) {
         int size = 1;
@@ -50,6 +51,36 @@ private:
             size *= dim;
         }
         return size;
+    }
+
+    static std::vector<ExpInitVal *> flattenInit(const InitVal *initVal) {
+        if (auto *exp = dynamic_cast<const ExpInitVal *>(initVal)) {
+            return {const_cast<ExpInitVal *>(exp)};
+        }
+        if (auto *array = dynamic_cast<const ArrayInitVal *>(initVal)) {
+            return array->getFlatten();
+        }
+        return {};
+    }
+
+    static std::vector<int> stringBytes(const std::string &token, bool nullTerminate) {
+        std::vector<int> bytes;
+        for (size_t i = 1; i + 1 < token.length(); ++i) {
+            if (token[i] == '\\' && i + 2 < token.length()) {
+                ++i;
+                if (token[i] == 'n') {
+                    bytes.push_back('\n');
+                } else {
+                    bytes.push_back(static_cast<unsigned char>(token[i]));
+                }
+            } else {
+                bytes.push_back(static_cast<unsigned char>(token[i]));
+            }
+        }
+        if (nullTerminate) {
+            bytes.push_back(0);
+        }
+        return bytes;
     }
 
     static Type objectValueType(const Symbol *symbol) {
@@ -234,7 +265,7 @@ private:
         if (!value->getDims().empty()) {
             Operand slot = builder_.emitAlloca(type, def.ident, arraySize(value->getDims()));
             storage_[symbol] = {slot, type, value->getDims(), false};
-            builder_.emitComment("array initializer lowering pending for " + def.ident);
+            initArray(def, type, *value);
             return;
         }
 
@@ -245,6 +276,38 @@ private:
                 builder_.emitStore(coerce(genExp(*expInit->exp), type), slot);
             }
         }
+    }
+
+    void initArray(const Def &def, Type type, const ValueSymbol &symbol) {
+        if (!def.initVal) {
+            return;
+        }
+        int index = 0;
+        int total = arraySize(symbol.getDims());
+        if (auto *str = dynamic_cast<StringInitVal *>(def.initVal.get())) {
+            for (int value: str->evaluate()) {
+                if (index >= total) {
+                    break;
+                }
+                storeArrayElement(def.ident, index++, Operand::constant(type, value), type);
+            }
+        } else {
+            for (auto *expInit: flattenInit(def.initVal.get())) {
+                if (index >= total) {
+                    break;
+                }
+                storeArrayElement(def.ident, index++, genExp(*expInit->exp), type);
+            }
+        }
+    }
+
+    void storeArrayElement(const std::string &ident, int index, Operand value, Type type) {
+        auto *storage = lookupStorage(ident);
+        if (!storage) {
+            return;
+        }
+        Operand ptr = builder_.emitGetElementPtr(type, storage->ptr, Operand::constant(Type::Int, index), ident + ".init");
+        builder_.emitStore(coerce(std::move(value), type), std::move(ptr));
     }
 
     void genStmt(const Stmt &stmt) {
@@ -369,16 +432,54 @@ private:
     }
 
     void genPrint(const PrintStmt &stmt) {
-        for (size_t i = 0; i < stmt.exps.size() && i < stmt.formatTypes.size(); ++i) {
-            Operand value = genExp(*stmt.exps[i]);
-            if (stmt.formatTypes[i] == 'd') {
-                builder_.emitCall(Type::Void, "put_int", {coerce(value, Type::Int)});
-            } else if (stmt.formatTypes[i] == 'c') {
-                builder_.emitCall(Type::Void, "put_char", {coerce(value, Type::Char)});
+        std::vector<Operand> args;
+        args.reserve(stmt.exps.size());
+        for (const auto &exp: stmt.exps) {
+            args.push_back(genExp(*exp));
+        }
+
+        std::string literal;
+        size_t argIndex = 0;
+        for (size_t i = 1; i + 1 < stmt.formatString.size(); ++i) {
+            if (stmt.formatString[i] == '%') {
+                emitStringSegment(literal);
+                char fmt = stmt.formatString[++i];
+                if (argIndex >= args.size()) {
+                    continue;
+                }
+                Operand arg = args[argIndex++];
+                if (fmt == 'd') {
+                    builder_.emitCall(Type::Void, "put_int", {coerce(std::move(arg), Type::Int)});
+                } else if (fmt == 'c') {
+                    builder_.emitCall(Type::Void, "put_char", {coerce(std::move(arg), Type::Char)});
+                } else if (fmt == 's') {
+                    builder_.emitCall(Type::Void, "put_str", {std::move(arg)});
+                }
             } else {
-                builder_.emitComment("string printf argument lowering pending");
+                if (stmt.formatString[i] == '\\' && i + 2 < stmt.formatString.size()) {
+                    literal += '\\';
+                    literal += stmt.formatString[++i];
+                } else {
+                    literal += stmt.formatString[i];
+                }
             }
         }
+        emitStringSegment(literal);
+    }
+
+    void emitStringSegment(std::string &literal) {
+        if (literal.empty()) {
+            return;
+        }
+        std::string token = "\"" + literal + "\"";
+        GlobalVar global;
+        global.name = "__str_" + std::to_string(stringId_++);
+        global.elementType = Type::Char;
+        global.dims = {static_cast<int>(stringBytes(token, true).size())};
+        global.init = stringBytes(token, true);
+        module_.addGlobal(global);
+        builder_.emitCall(Type::Void, "put_str", {Operand("ptr", "@" + global.name)});
+        literal.clear();
     }
 
     Operand genCond(const Cond &cond) {
@@ -510,9 +611,11 @@ private:
         if (!storage) {
             return Operand::constant(Type::Int, 0);
         }
-        if (!lVal.dims.empty() || !storage->dims.empty()) {
-            builder_.emitComment("array load lowering pending for " + lVal.ident);
-            return Operand::constant(storage->valueType, 0);
+        if (!storage->dims.empty()) {
+            if (lVal.dims.empty()) {
+                return storage->ptr;
+            }
+            return builder_.emitLoad(storage->valueType, addressOfLVal(lVal, *storage), lVal.ident);
         }
         return builder_.emitLoad(storage->valueType, storage->ptr, lVal.ident);
     }
@@ -522,11 +625,38 @@ private:
         if (!storage) {
             return;
         }
-        if (!lVal.dims.empty() || !storage->dims.empty()) {
-            builder_.emitComment("array store lowering pending for " + lVal.ident);
+        if (!storage->dims.empty()) {
+            builder_.emitStore(coerce(std::move(value), storage->valueType), addressOfLVal(lVal, *storage));
             return;
         }
         builder_.emitStore(coerce(std::move(value), storage->valueType), storage->ptr);
+    }
+
+    Operand addressOfLVal(const LVal &lVal, const Storage &storage) {
+        if (lVal.dims.empty()) {
+            return storage.ptr;
+        }
+        Operand index = linearIndex(lVal, storage.dims);
+        return builder_.emitGetElementPtr(storage.valueType, storage.ptr, std::move(index), lVal.ident + ".elem");
+    }
+
+    Operand linearIndex(const LVal &lVal, const std::vector<int> &dims) {
+        Operand total = Operand::constant(Type::Int, 0);
+        int product = 1;
+        for (size_t i = dims.size(); i-- > 0;) {
+            if (i + 1 < dims.size()) {
+                product *= dims[i + 1];
+            }
+            if (i >= lVal.dims.size()) {
+                continue;
+            }
+            Operand part = asInt(genExp(*lVal.dims[i]));
+            if (product != 1) {
+                part = builder_.emitBinary("mul", Type::Int, std::move(part), Operand::constant(Type::Int, product), "idxmul");
+            }
+            total = builder_.emitBinary("add", Type::Int, std::move(total), std::move(part), "idx");
+        }
+        return total;
     }
 
     Operand asInt(Operand value) {
