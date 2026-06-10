@@ -38,21 +38,11 @@ python3 test/run_testcase_2026.py --suite errors
 
 # Run a small subset while developing
 python3 test/run_testcase_2026.py --suite all --limit 20
-
-# Download BUAA Mars locally
-curl -L -o test/vendor/Mars-2024.jar https://github.com/Lord-Turmoil/Mars-for-BUAA/releases/download/v1.0.1/Mars-2024.jar
-
-# Execute generated MIPS with Mars and compare ans.txt
-python3 test/run_testcase_2026.py --suite 2026 --mars-jar test/vendor/Mars-2024.jar
 ```
 
-Without `--mars-jar`, correct cases only check that compilation succeeds and
-`error.txt` is empty. Error cases always compare `error.txt`.
-
-When `--mars-jar` is used, pure `get_int` inputs are normalized from
-whitespace-separated integers to one integer per line for Mars syscall 5. The
-harness does not append extra EOF values. Runtime output comparison ignores
-extra final newlines emitted by Mars.
+Correct cases currently check that the front end succeeds and `error.txt` is
+empty. Error cases compare `error.txt`. Runtime comparison is disabled until the
+new middle end and backend are rebuilt.
 
 `make generate` in `testcase-2026` is executed with
 `ASAN_OPTIONS=detect_leaks=0` so it works in ptrace/sandboxed environments where

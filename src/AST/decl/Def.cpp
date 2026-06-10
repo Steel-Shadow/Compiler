@@ -3,7 +3,6 @@
 //
 #include "Def.h"
 
-#include "AST/IRGenUtil.h"
 #include "Decl.h"
 #include "errorHandler/Error.h"
 #include "frontend/parser/Parser.h"
@@ -112,83 +111,6 @@ std::unique_ptr<Def> Def::parse(bool cons, Type type, bool statik) {
         output(AST::VarDef);
     }
     return n;
-}
-
-void Def::genIR(IR::BasicBlocks &bBlocks, Type type) const {
-    using namespace IR;
-
-    auto symbol = SymTab::find(ident);
-    const int depth = SymTab::currentDepth();
-    auto var = makeIRVar(symbol, ident, depth, type);
-    auto pVar = var.get();
-
-    SymTab::recordGeneratedVar(ident, depth);
-    if (statik) {
-        return;
-    }
-
-    auto size = std::make_unique<ConstVal>(getArraySize(), Type::Int);
-    bBlocks.back()->addInst(Inst(
-            Op::Alloca,
-            nullptr,
-            std::move(var),
-            std::move(size)));
-
-    if (initVal) {
-        if (dims.empty()) {
-            // single value assign
-            auto *p = dynamic_cast<ExpInitVal *>(initVal.get());
-            auto value = p->exp->genIR(bBlocks);
-
-            bBlocks.back()->addInst(Inst(
-                    Op::Store,
-                    std::move(value),
-                    std::make_unique<Var>(*pVar),
-                    nullptr));
-        } else {
-            auto storeImmediate = [&](int value, int index) {
-                if (type == Type::Char) {
-                    value &= 0xFF;
-                }
-                auto temp = std::make_unique<Temp>(type);
-                bBlocks.back()->addInst(Inst(
-                        Op::LoadImd,
-                        std::make_unique<Temp>(*temp),
-                        std::make_unique<ConstVal>(value, type),
-                        nullptr));
-                bBlocks.back()->addInst(Inst(
-                        Op::Store,
-                        std::move(temp),
-                        std::make_unique<Var>(*pVar),
-                        std::make_unique<ConstVal>(index, Type::Int)));
-            };
-
-            // array init
-            int arraySize = getArraySize();
-            int index = 0;
-            if (auto array = dynamic_cast<ArrayInitVal *>(initVal.get())) {
-                for (auto &expInit: array->getFlatten()) {
-                    auto value = expInit->exp->genIR(bBlocks);
-                    bBlocks.back()->addInst(Inst(
-                            Op::Store,
-                            std::move(value),
-                            std::make_unique<Var>(*pVar),
-                            std::make_unique<ConstVal>(index++, Type::Int)));
-                }
-            } else if (auto str = dynamic_cast<StringInitVal *>(initVal.get())) {
-                auto values = str->evaluate();
-                for (int value: values) {
-                    if (index >= arraySize) {
-                        break;
-                    }
-                    storeImmediate(value, index++);
-                }
-            }
-            while (index < arraySize) {
-                storeImmediate(0, index++);
-            }
-        }
-    }
 }
 
 const std::string &Def::getIdent() const {

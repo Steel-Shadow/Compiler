@@ -6,7 +6,6 @@
 #define COMPILER_EXP_H
 
 #include "frontend/lexer/LexType.h"
-#include "middle/IR.h"
 
 
 #include <memory>
@@ -18,7 +17,6 @@ class FuncSymbol;
 struct FuncRParams;
 struct Exp;
 
-IR::Op lexTypeToIROp(LexType type);
 bool opProducesInt(LexType type);
 Type resolveMultiExpType(Type firstType,
                          size_t firstRemainingRank,
@@ -32,7 +30,6 @@ struct BaseUnaryExp {
     // override in Number
     virtual int evaluate();
 
-    virtual std::unique_ptr<IR::Temp> genIR(IR::BasicBlocks &bBlocks) = 0;
     virtual Type getType() = 0;
 };
 
@@ -56,13 +53,7 @@ struct LVal : public PrimaryExp {
 
     std::string getIdent() override;
 
-    // Load a Var to Temp
-    std::unique_ptr<IR::Temp> genIR(IR::BasicBlocks &bBlocks) override;
-
     int evaluate() override;
-
-    // return whether getNonConstIndex in LVal's indexes
-    bool getOffset(int &constOffset, std::unique_ptr<IR::Temp> &dynamicOffset, IR::BasicBlocks &bBlocks, const std::vector<int> &symDims, Type type = Type::Int) const;
 
     Type getType() override;
 };
@@ -85,8 +76,6 @@ struct UnaryExp {
 
     std::string getIdent() const;
 
-    std::unique_ptr<IR::Temp> genIR(IR::BasicBlocks &bBlocks) const;
-
     LVal *getLVal() const;
 
     Type getType() const;
@@ -103,8 +92,6 @@ struct FuncCall : public BaseUnaryExp {
 
     static void checkParams(const std::unique_ptr<FuncCall> &n, int row, const FuncSymbol *funcSym);
 
-    std::unique_ptr<IR::Temp> genIR(IR::BasicBlocks &bBlocks) override;
-
     Type getType() override;
 };
 
@@ -116,7 +103,6 @@ struct CastExp : public BaseUnaryExp {
     static std::unique_ptr<CastExp> parse();
 
     int evaluate() override;
-    std::unique_ptr<IR::Temp> genIR(IR::BasicBlocks &bBlocks) override;
     Type getType() override;
 };
 
@@ -125,8 +111,6 @@ struct PareExp : public PrimaryExp {
     std::unique_ptr<Exp> exp;
 
     static std::unique_ptr<PareExp> parse();
-
-    std::unique_ptr<IR::Temp> genIR(IR::BasicBlocks &bBlocks) override;
 
     int evaluate() override;
     Type getType() override;
@@ -141,10 +125,6 @@ struct Number : public PrimaryExp {
 
     int evaluate() override;
 
-    // load immediate number in a separate MIPS instruction
-    // can be optimized into calculate instruction (backend)
-    std::unique_ptr<IR::Temp> genIR(IR::BasicBlocks &bBlocks) override;
-
     Type getType() override;
 };
 
@@ -153,26 +133,6 @@ struct MultiExp {
     std::unique_ptr<T> first;
     std::vector<LexType> ops;
     std::vector<std::unique_ptr<T>> elements;
-
-    std::unique_ptr<IR::Temp> genIR(IR::BasicBlocks &bBlocks) const {
-        using namespace IR;
-        auto lastRes = first->genIR(bBlocks);
-        for (size_t i = 0; i < ops.size(); ++i) {
-            auto t = elements[i]->genIR(bBlocks);
-            Type resultType = ptrToValue(lastRes->type);
-            if (opProducesInt(ops[i])) {
-                resultType = Type::Int;
-            }
-            auto res = std::make_unique<Temp>(resultType);
-            bBlocks.back()->addInst(Inst(
-                    lexTypeToIROp(ops[i]),
-                    std::make_unique<Temp>(*res),
-                    std::move(lastRes),
-                    std::move(t)));
-            lastRes = std::move(res);
-        }
-        return lastRes;
-    }
 
     std::string getIdent() {
         if (!elements.empty()) {
@@ -232,19 +192,16 @@ struct RelExp : MultiExp<AddExp> {
 // EqExp → RelExp | EqExp ('==' | '!=') RelExp
 struct EqExp : MultiExp<RelExp> {
     static std::unique_ptr<EqExp> parse();
-    void genIR(IR::BasicBlocks &basicBlocks, IR::Label &trueBranch, IR::Label &falseBranch) const;
 };
 
 // LAndExp → EqExp | LAndExp '&&' EqExp
 struct LAndExp : MultiExp<EqExp> {
     static std::unique_ptr<LAndExp> parse();
-    void genIR(IR::BasicBlocks &basicBlocks, IR::Label &trueBranch, IR::Label &falseBranch) const;
 };
 
 // LOrExp → LAndExp | LOrExp '||' LAndExp
 struct LOrExp : MultiExp<LAndExp> {
     static std::unique_ptr<LOrExp> parse();
-    void genIR(IR::BasicBlocks &basicBlocks, IR::Label &trueBranch, IR::Label &falseBranch) const;
 };
 
 // Cond → LOrExp
@@ -252,8 +209,6 @@ struct Cond {
     std::unique_ptr<LOrExp> lorExp;
 
     static std::unique_ptr<Cond> parse();
-
-    void genIR(IR::BasicBlocks &basicBlocks, IR::Label &trueBranch, IR::Label &falseBranch) const;
 };
 
 // Exp → AddExp
@@ -280,8 +235,6 @@ struct Exp {
     // get ident of LVal or FuncCall
     // if the Exp is not a single LVal or FuncCall, return ""
     std::string getIdent() const;
-
-    std::unique_ptr<IR::Temp> genIR(IR::BasicBlocks &bBlocks) const;
 
     Type getType() const;
 

@@ -31,9 +31,6 @@ struct Decl : public BlockItem {
     const std::vector<std::unique_ptr<Def>> &getDefs() const;
 
     static std::unique_ptr<Decl> parse();
-
-    // local decl (global decl is evaluated in IR::Module)
-    void genIR(IR::BasicBlocks &bBlocks) override;
 };
 
 // wrap string

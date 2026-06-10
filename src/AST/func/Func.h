@@ -51,8 +51,6 @@ struct FuncDef {
     std::unique_ptr<Block> block;
 
     static std::unique_ptr<FuncDef> parse();
-
-    std::unique_ptr<IR::Function> genIR();
 };
 
 // MainFuncDef→'int''main''('')'Block
@@ -60,8 +58,6 @@ struct MainFuncDef {
     std::unique_ptr<Block> block;
 
     static std::unique_ptr<MainFuncDef> parse();
-
-    std::unique_ptr<IR::Function> genIR() const;
 };
 
 

@@ -88,23 +88,6 @@ std::unique_ptr<MainFuncDef> MainFuncDef::parse() {
     return n;
 }
 
-std::unique_ptr<IR::Function> MainFuncDef::genIR() const {
-    using namespace IR;
-    auto main = std::make_unique<Function>(
-            "main", Type::Int, Params());
-
-    BasicBlocks bBlocks;
-    bBlocks.emplace_back(std::make_unique<BasicBlock>("main", true));
-    SymTab::iterIn();
-
-    Function::idAllocator = 0;
-    block->genIR(bBlocks);
-
-    main->moveBasicBlocks(std::move(bBlocks));
-    SymTab::iterOut();
-    return main;
-}
-
 std::unique_ptr<FuncType> FuncType::parse() {
     auto n = std::make_unique<FuncType>();
 
@@ -208,29 +191,4 @@ std::unique_ptr<FuncRParams> FuncRParams::parse() {
 
     output(AST::FuncRParams);
     return n;
-}
-
-std::unique_ptr<IR::Function> FuncDef::genIR() {
-    using namespace IR;
-    auto *functionSymbol = SymTab::find(ident)->asFunc();
-    auto function = std::make_unique<Function>(ident, functionSymbol->getType(), functionSymbol->getParams());
-
-    BasicBlocks bBlocks;
-    Function::idAllocator = 0;
-
-    SymTab::iterIn();
-
-    bBlocks.emplace_back(std::make_unique<BasicBlock>(ident, true));
-    block->genIR(bBlocks);
-
-    if (bBlocks.back()->instructions.empty() || bBlocks.back()->instructions.back().op != Op::Ret) {
-        bBlocks.back()->addInst(Inst(Op::Ret,
-                                     nullptr,
-                                     nullptr,
-                                     nullptr));
-    }
-
-    function->moveBasicBlocks(std::move(bBlocks));
-    SymTab::iterOut();
-    return function;
 }

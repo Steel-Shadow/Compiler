@@ -1,6 +1,17 @@
 #include "AST/CompUnit.h"
-#include "backend/MIPS.h"
 #include "errorHandler/Error.h"
+#include "frontend/lexer/Lexer.h"
+
+#include <fstream>
+#include <string>
+
+namespace {
+void createEmptyOutputFile(const std::string &path) {
+    if (!path.empty()) {
+        std::ofstream output(path);
+    }
+}
+} // namespace
 
 void compile(const std::string &inFile,
              const std::string &outFile,
@@ -9,15 +20,10 @@ void compile(const std::string &inFile,
              const std::string &mipsFile) {
     Lexer::init(inFile, outFile);
     Error::errorFileStream = std::ofstream(errorFile);
-    IR::IRFileStream = std::ofstream(IRFile);
-    MIPS::mipsFileStream = std::ofstream(mipsFile);
+    createEmptyOutputFile(IRFile);
+    createEmptyOutputFile(mipsFile);
 
-    auto compUnit = CompUnit::parse();
-    if (!Error::hasError) {
-        auto module = compUnit->genIR();
-        module->outputIR();
-        MIPS::genMIPS(*module);
-    }
+    (void) CompUnit::parse();
 }
 
 int main(int argc, char *argv[]) {

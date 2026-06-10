@@ -119,7 +119,7 @@ Type toType(LexType type) {
         case LexType::VOIDTK:
             return Type::Void;
         default:
-            Error::raise("Bad Btype to IR");
+            Error::raise("Bad Btype");
             return Type::Void;
     }
 }

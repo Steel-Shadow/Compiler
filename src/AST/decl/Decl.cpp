@@ -50,13 +50,6 @@ const std::vector<std::unique_ptr<Def>> &Decl::getDefs() const {
     return defs;
 }
 
-void Decl::genIR(IR::BasicBlocks &bBlocks) {
-    using namespace IR;
-    for (auto &def: defs) {
-        def->genIR(bBlocks, toType(btype->type));
-    }
-}
-
 int Def::getArraySize() const {
     auto *symbol = SymTab::find(ident)->asObject();
     int size = 1;

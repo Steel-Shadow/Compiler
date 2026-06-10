@@ -19,8 +19,6 @@ struct CompUnit {
     std::unique_ptr<MainFuncDef> mainFuncDef;
 
     static std::unique_ptr<CompUnit> parse();
-
-    std::unique_ptr<IR::Module> genIR() const;
 };
 
 #endif

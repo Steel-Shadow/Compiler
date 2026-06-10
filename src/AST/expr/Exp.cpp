@@ -24,40 +24,6 @@ std::unique_ptr<Exp> Exp::parse(bool cons) {
 
 bool Exp::getNonConstValueInEvaluate = false;
 
-IR::Op lexTypeToIROp(LexType type) {
-    switch (type) {
-        case LexType::PLUS:
-            return IR::Op::Add;
-        case LexType::MINU:
-            return IR::Op::Sub;
-        case LexType::MULT:
-            return IR::Op::Mul;
-        case LexType::DIV:
-            return IR::Op::Div;
-        case LexType::MOD:
-            return IR::Op::Mod;
-        case LexType::AND:
-            return IR::Op::And;
-        case LexType::OR:
-            return IR::Op::Or;
-        case LexType::LEQ:
-            return IR::Op::Leq;
-        case LexType::LSS:
-            return IR::Op::Lss;
-        case LexType::GEQ:
-            return IR::Op::Geq;
-        case LexType::GRE:
-            return IR::Op::Gre;
-        case LexType::EQL:
-            return IR::Op::Eql;
-        case LexType::NEQ:
-            return IR::Op::Neq;
-        default:
-            Error::raise("Bad IR Operator");
-            return IR::Op::Empty;
-    }
-}
-
 bool opProducesInt(LexType type) {
     return type == LexType::LSS || type == LexType::GRE || type == LexType::LEQ || type == LexType::GEQ
            || type == LexType::EQL || type == LexType::NEQ || type == LexType::AND || type == LexType::OR;
@@ -114,10 +80,6 @@ size_t Exp::getRemainingRank() const {
 
 std::string Exp::getIdent() const {
     return addExp->getIdent();
-}
-
-std::unique_ptr<IR::Temp> Exp::genIR(IR::BasicBlocks &bBlocks) const {
-    return addExp->genIR(bBlocks);
 }
 
 Type Exp::getType() const {

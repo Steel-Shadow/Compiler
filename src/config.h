@@ -8,16 +8,12 @@
 #define FILEOUT_ERROR
 // #define FILEOUT_LEXER
 // #define FILEOUT_PARSER
-#define FILEOUT_MIPS
 
 
 #if defined(MY_DEBUG)
 // #define STDOUT_LEXER
 // #define STDOUT_PARSER
 #define STDOUT_ERROR
-// #define STDOUT_IR
-#define FILEOUT_IR
-// #define STDOUT_MIPS
 #endif
 
 

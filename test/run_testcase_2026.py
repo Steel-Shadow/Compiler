@@ -300,7 +300,7 @@ def main():
     parser.add_argument(
         "--suite",
         choices=["all", "2026", "regression", "correct", "errors"],
-        default="all",
+        default="2026",
     )
     parser.add_argument("--filter", help="only run cases whose generated path contains this text")
     parser.add_argument("--limit", type=int, help="limit number of correct and error cases separately")

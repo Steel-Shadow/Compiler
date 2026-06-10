@@ -30,8 +30,6 @@ struct Def {
 
     const std::string &getIdent() const;
 
-    void genIR(IR::BasicBlocks &bBlocks, Type type) const;
-
     int getArraySize() const;
 };
 

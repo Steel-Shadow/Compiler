@@ -9,9 +9,6 @@ SymTab SymTab::global{nullptr};
 
 SymTab *SymTab::cur = &global;
 
-std::vector<std::set<std::pair<std::string, int>>> SymTab::generatedVars;
-std::vector<ValueSymbol *> SymTab::staticVars;
-
 void SymTab::resetToGlobal() {
     cur = &global;
 }
@@ -41,43 +38,8 @@ Symbol *SymTab::find(const std::string &ident) {
     return nullptr;
 }
 
-std::pair<Symbol *, int> SymTab::findInGen(const std::string &ident) {
-    auto generatedVarScope = generatedVars.crbegin();
-    for (SymTab *p = cur;
-         p != nullptr && generatedVarScope != generatedVars.crend();
-         p = p->prev, ++generatedVarScope) {
-        auto it = p->symbols.find(ident);
-        if (it != p->symbols.end() && (it->second->asParam() || generatedVarScope->find({ident, p->depth}) != generatedVarScope->end())) {
-            return {it->second.get(), p->depth};
-        }
-    }
-    return {nullptr, -1};
-}
-
 void SymTab::add(const std::string &ident, std::unique_ptr<Symbol> symbol, SymTab *where) {
-    auto [it, inserted] = where->symbols.emplace(ident, std::move(symbol));
-    if (inserted) {
-        auto *value = it->second->asValue();
-        if (value && value->isStatic()) {
-            staticVars.push_back(value);
-        }
-    }
-}
-
-const std::vector<ValueSymbol *> &SymTab::getStaticVars() {
-    return staticVars;
-}
-
-void SymTab::enterGeneratedVarScope() {
-    generatedVars.emplace_back();
-}
-
-void SymTab::leaveGeneratedVarScope() {
-    generatedVars.pop_back();
-}
-
-void SymTab::recordGeneratedVar(const std::string &ident, int depth) {
-    generatedVars.back().emplace(ident, depth);
+    where->symbols.emplace(ident, std::move(symbol));
 }
 
 void SymTab::addBuiltins() {
@@ -97,12 +59,9 @@ void SymTab::addBuiltins() {
 }
 
 
-std::list<SymTab *> SymTab::symTabs;
-
 void SymTab::deepIn() {
     auto &newSymTab = cur->next.emplace_back(std::make_unique<SymTab>(cur));
     cur = newSymTab.get();
-    symTabs.push_back(cur);
 }
 
 void SymTab::deepOut() {
@@ -112,17 +71,6 @@ void SymTab::deepOut() {
 SymTab::SymTab(SymTab *prev) :
     prev(prev) {
     depth = prev == nullptr ? 0 : prev->depth + 1;
-}
-
-void SymTab::iterIn() {
-    cur = symTabs.front();
-    symTabs.pop_front();
-    enterGeneratedVarScope();
-}
-
-void SymTab::iterOut() {
-    cur = cur->prev;
-    leaveGeneratedVarScope();
 }
 
 int SymTab::getDepth() const {
