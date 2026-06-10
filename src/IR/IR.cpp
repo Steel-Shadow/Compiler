@@ -1,4 +1,4 @@
-#include "ir/IR.h"
+#include "IR/IR.h"
 
 #include <sstream>
 
@@ -48,14 +48,6 @@ std::string typeToIR(Type type) {
             return "ptr";
     }
     return "void";
-}
-
-std::string typeToMIPSLoad(Type type) {
-    return type == Type::Char ? "lb" : "lw";
-}
-
-std::string typeToMIPSStore(Type type) {
-    return type == Type::Char ? "sb" : "sw";
 }
 
 Operand::Operand(std::string type, std::string text) :

@@ -2,7 +2,7 @@
 #define COMPILER_IR_GENERATOR_H
 
 #include "AST/CompUnit.h"
-#include "ir/IR.h"
+#include "IR/IR.h"
 
 namespace IR {
 

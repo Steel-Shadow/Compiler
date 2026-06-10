@@ -40,7 +40,7 @@ src/
     symTab/         符号表、符号对象、作用域遍历
   common/           类型系统公共工具
   errorHandler/     错误收集与输出
-  ir/               IR 数据结构、IRBuilder、AST 到 IR 生成、优化 Pass
+  IR/               IR 数据结构、IRBuilder、AST 到 IR 生成、优化 Pass
   backend/          MIPS 后端
   tools/            通用容器工具
   main.cpp          编译流程入口
@@ -124,7 +124,7 @@ global
 
 ## 5. 中间表示设计
 
-IR 定义位于 `src/ir/IR.h`。IR 采用接近 LLVM IR 的三地址形式，基本单位为：
+IR 定义位于 `src/IR/IR.h`。IR 采用接近 LLVM IR 的三地址形式，基本单位为：
 
 - `Module`：编译单元，保存全局变量、函数和内建声明。
 - `Function`：函数，保存参数、基本块和临时编号。
@@ -193,7 +193,7 @@ Exp -> AddExp -> MulExp -> UnaryExp -> PrimaryExp/LVal/Call/Cast
 
 ## 7. Mem2Reg 优化
 
-`src/ir/Passes.cpp` 实现了标量 mem2reg。该 pass 只提升满足条件的局部标量 `alloca`：
+`src/IR/Passes.cpp` 实现了标量 mem2reg。该 pass 只提升满足条件的局部标量 `alloca`：
 
 - 分配对象不是数组。
 - 类型为 `i32` 或 `i8`。
@@ -212,11 +212,23 @@ trivial phi 删除对递归和复杂控制流样例很关键。它可以避免�
 
 ## 8. MIPS 后端设计
 
-MIPS 后端位于 `src/backend/MIPS.cpp`。入口为：
+MIPS 后端位于 `src/backend/`。公开入口保留在 `MIPS.h` 中：
 
 ```cpp
 std::string MIPS::generate(const IR::Module &module);
 ```
+
+后端实现按职责拆分为：
+
+- `MIPS.cpp`：模块级 `.data/.text` 发射、运行时 stub 和公开 `generate`。
+- `MIPSInternal.h`：后端内部结构、`FunctionEmitter` 声明和共享工具声明。
+- `MIPSFunctionEmitter.cpp`：函数级发射流程、栈帧构建、函数序言/结尾。
+- `MIPSRegAlloc.cpp`：liveness、call-live、干涉图和图着色寄存器分配。
+- `MIPSPhi.cpp`：phi 边复制、direct-copy 和并行复制处理。
+- `MIPSOperand.cpp`：操作数 materialize、load/store value、地址物化。
+- `MIPSInst.cpp`：各类 IR 指令到 MIPS 指令的翻译。
+- `MIPSPeephole.cpp`：汇编级 peephole 优化。
+- `MIPSUtils.cpp`：标签、类型大小、整数字面量等通用工具。
 
 后端整体分为三个部分：
 
@@ -294,7 +306,7 @@ pred -> target:
 
 测试脚本位于 `test/run_testcase_2026.py`。它可以发现 testcase-2026 的 generated 用例，并自动执行：
 
-1. 调用编译器生成 `lexer/error/ir/mips`。
+1. 调用编译器生成 `lexer/error/IR/mips`。
 2. 对错误样例比对 `error.txt`。
 3. 对正确样例调用 Mars 运行 MIPS，并比对 `ans.txt`。
 

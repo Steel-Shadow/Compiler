@@ -1,7 +1,7 @@
 #ifndef COMPILER_IR_PASSES_H
 #define COMPILER_IR_PASSES_H
 
-#include "ir/IR.h"
+#include "IR/IR.h"
 
 namespace IR {
 

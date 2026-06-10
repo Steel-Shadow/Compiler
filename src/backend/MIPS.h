@@ -1,7 +1,7 @@
 #ifndef COMPILER_MIPS_H
 #define COMPILER_MIPS_H
 
-#include "ir/IR.h"
+#include "IR/IR.h"
 
 #include <ostream>
 #include <string>

@@ -12,8 +12,6 @@
 namespace IR {
 
 std::string typeToIR(Type type);
-std::string typeToMIPSLoad(Type type);
-std::string typeToMIPSStore(Type type);
 
 struct Operand {
     std::string type;

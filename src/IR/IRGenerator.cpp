@@ -1,4 +1,4 @@
-#include "ir/IRGenerator.h"
+#include "IR/IRGenerator.h"
 
 #include "AST/decl/Decl.h"
 #include "AST/decl/InitVal.h"

@@ -2,8 +2,8 @@
 #include "backend/MIPS.h"
 #include "errorHandler/Error.h"
 #include "frontend/lexer/Lexer.h"
-#include "ir/IRGenerator.h"
-#include "ir/Passes.h"
+#include "IR/IRGenerator.h"
+#include "IR/Passes.h"
 
 #include <fstream>
 #include <string>

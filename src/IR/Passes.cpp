@@ -1,4 +1,4 @@
-#include "ir/Passes.h"
+#include "IR/Passes.h"
 
 #include <algorithm>
 #include <map>
