@@ -1,0 +1,152 @@
+#ifndef SUPER_PRODUCTION
+#include <libsysy.h>
+#endif
+
+#ifdef SUPER_PRODUCTION
+#define unsigned int
+#endif
+
+const int MAXN = 15;
+const int MAXMASK = 32768;
+
+int sumc[32768], summ[32768], val[32768];
+int feasible[32768];
+int dp[32768], cnt[32768];
+int ans[16];
+int pow2[16];
+
+int bitAnd(int a, int b) {
+    int result, i;
+    result = 0;
+    i = 0;
+    while (i < 15) {
+        if ((a / pow2[i]) % 2 && (b / pow2[i]) % 2) {
+            result = result + pow2[i];
+        }
+        i = i + 1;
+    }
+    return result;
+}
+
+int main() {
+    int n, C, M;
+    int c[15], m[15], v[15];
+    int i, mask;
+    int full;
+    int idx, lb, prev;
+    int rem, sub, new_mask, newDp, newCnt;
+
+    pow2[0] = 1;
+    i = 1;
+    while (i <= 15) {
+        pow2[i] = pow2[i - 1] * 2;
+        i = i + 1;
+    }
+
+    n = get_int();
+    C = get_int();
+    M = get_int();
+
+    i = 0;
+    while (i < n) {
+        c[i] = get_int();
+        m[i] = get_int();
+        v[i] = get_int();
+        i = i + 1;
+    }
+
+    full = pow2[n] - 1;
+
+    mask = 0;
+    while (mask <= full) {
+        sumc[mask] = 0;
+        summ[mask] = 0;
+        val[mask] = 0;
+        feasible[mask] = 0;
+        mask = mask + 1;
+    }
+
+    mask = 1;
+    while (mask <= full) {
+        idx = 0;
+        while (idx < 15) {
+            if ((mask / pow2[idx]) % 2) {
+                break;
+            }
+            idx = idx + 1;
+        }
+        lb = pow2[idx];
+        prev = mask - lb;
+        sumc[mask] = sumc[prev] + c[idx];
+        summ[mask] = summ[prev] + m[idx];
+        val[mask] = val[prev] + v[idx];
+        if (sumc[mask] <= C && summ[mask] <= M) {
+            feasible[mask] = 1;
+        }
+        mask = mask + 1;
+    }
+
+    mask = 0;
+    while (mask <= full) {
+        dp[mask] = -1;
+        cnt[mask] = 1061109567;
+        mask = mask + 1;
+    }
+    dp[0] = 0;
+    cnt[0] = 0;
+
+    mask = 0;
+    while (mask <= full) {
+        if (dp[mask] == -1) {
+            mask = mask + 1;
+            continue;
+        }
+        rem = full - mask;
+        sub = rem;
+        while (sub) {
+            if (feasible[sub]) {
+                new_mask = mask + sub;
+                newDp = dp[mask] + val[sub];
+                newCnt = cnt[mask] + 1;
+                if (dp[new_mask] == -1 || newCnt < cnt[new_mask]) {
+                    dp[new_mask] = newDp;
+                    cnt[new_mask] = newCnt;
+                }
+            }
+            sub = bitAnd(sub - 1, rem);
+        }
+        mask = mask + 1;
+    }
+
+    i = 0;
+    while (i <= n) {
+        ans[i] = 0;
+        i = i + 1;
+    }
+
+    mask = 1;
+    while (mask <= full) {
+        if (dp[mask] != -1) {
+            if (dp[mask] > ans[cnt[mask] - 1]) {
+                ans[cnt[mask] - 1] = dp[mask];
+            }
+        }
+        mask = mask + 1;
+    }
+
+    i = 1;
+    while (i < n) {
+        if (ans[i] == 0) {
+            ans[i] = ans[i - 1];
+        }
+        i = i + 1;
+    }
+
+    i = 0;
+    while (i < n) {
+        printf("%d\n", ans[i]);
+        i = i + 1;
+    }
+
+    return 0;
+}
