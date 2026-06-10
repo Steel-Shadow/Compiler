@@ -14,7 +14,7 @@ public:
 
 private:
     void emitRuntimeStubs(std::ostream &out);
-    void emitFunctionSkeleton(const IR::Function &function, std::ostream &out);
+    void emitFunction(const IR::Function &function, std::ostream &out);
 };
 
 std::string generate(const IR::Module &module);

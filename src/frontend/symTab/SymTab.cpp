@@ -9,6 +9,9 @@ SymTab SymTab::global{nullptr};
 
 SymTab *SymTab::cur = &global;
 
+std::vector<SymTab *> SymTab::traversalOrder;
+size_t SymTab::traversalCursor = 0;
+
 void SymTab::resetToGlobal() {
     cur = &global;
 }
@@ -38,6 +41,16 @@ Symbol *SymTab::find(const std::string &ident) {
     return nullptr;
 }
 
+std::pair<Symbol *, int> SymTab::findWithDepth(const std::string &ident) {
+    for (auto p = cur; p != nullptr; p = p->prev) {
+        auto it = p->symbols.find(ident);
+        if (it != p->symbols.end()) {
+            return {it->second.get(), p->depth};
+        }
+    }
+    return {nullptr, -1};
+}
+
 void SymTab::add(const std::string &ident, std::unique_ptr<Symbol> symbol, SymTab *where) {
     where->symbols.emplace(ident, std::move(symbol));
 }
@@ -62,9 +75,25 @@ void SymTab::addBuiltins() {
 void SymTab::deepIn() {
     auto &newSymTab = cur->next.emplace_back(std::make_unique<SymTab>(cur));
     cur = newSymTab.get();
+    traversalOrder.push_back(cur);
 }
 
 void SymTab::deepOut() {
+    cur = cur->prev;
+}
+
+void SymTab::resetTraversal() {
+    cur = &global;
+    traversalCursor = 0;
+}
+
+void SymTab::enterRecordedScope() {
+    if (traversalCursor < traversalOrder.size()) {
+        cur = traversalOrder[traversalCursor++];
+    }
+}
+
+void SymTab::leaveRecordedScope() {
     cur = cur->prev;
 }
 

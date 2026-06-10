@@ -192,6 +192,16 @@ Instruction Instruction::phi(std::string result, Type type, std::vector<PhiIncom
     return inst;
 }
 
+Instruction Instruction::cast(std::string result, std::string op, Type targetType, Operand value) {
+    Instruction inst;
+    inst.opcode = Opcode::Cast;
+    inst.result = std::move(result);
+    inst.op = std::move(op);
+    inst.type = typeToIR(targetType);
+    inst.operands.push_back(std::move(value));
+    return inst;
+}
+
 Instruction Instruction::makeComment(std::string text) {
     Instruction inst;
     inst.opcode = Opcode::Comment;
@@ -444,6 +454,15 @@ Operand IRBuilder::emitICmp(const std::string &predicate, Operand lhs, Operand r
     const std::string name = makeTemp(hint);
     block_->add(Instruction::icmp(name, predicate, std::move(lhs), std::move(rhs)));
     return Operand("i1", name);
+}
+
+Operand IRBuilder::emitCast(const std::string &op, Type targetType, Operand value, const std::string &hint) {
+    if (value.type == typeToIR(targetType)) {
+        return value;
+    }
+    const std::string name = makeTemp(hint);
+    block_->add(Instruction::cast(name, op, targetType, std::move(value)));
+    return Operand(typeToIR(targetType), name);
 }
 
 void IRBuilder::emitBr(const std::string &target) {

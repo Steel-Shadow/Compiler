@@ -2,7 +2,7 @@
 #include "backend/MIPS.h"
 #include "errorHandler/Error.h"
 #include "frontend/lexer/Lexer.h"
-#include "ir/IR.h"
+#include "ir/IRGenerator.h"
 
 #include <fstream>
 #include <string>
@@ -32,10 +32,9 @@ void compile(const std::string &inFile,
     createEmptyOutputFile(IRFile);
     createEmptyOutputFile(mipsFile);
 
-    (void) CompUnit::parse();
+    auto compUnit = CompUnit::parse();
     if (!Error::hasError) {
-        IR::Module module("Compiler");
-        module.addBuiltinDeclarations();
+        IR::Module module = IR::generateModule(*compUnit);
         writeTextFile(IRFile, module.toString());
         writeTextFile(mipsFile, MIPS::generate(module));
     }

@@ -10,6 +10,8 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 // tree
 // global -next-> SymTab... -next-> *cur
@@ -25,6 +27,8 @@ class SymTab {
 
     static SymTab *cur;
     static SymTab global;
+    static std::vector<SymTab *> traversalOrder;
+    static size_t traversalCursor;
 
 public:
     explicit SymTab(SymTab *prev);
@@ -36,6 +40,7 @@ public:
     static bool reDefine(const std::string &ident);
 
     static Symbol *find(const std::string &ident);
+    static std::pair<Symbol *, int> findWithDepth(const std::string &ident);
 
     // no effect if reDefine(ident)
     static void add(const std::string &ident, std::unique_ptr<Symbol> symbol, SymTab *where = cur);
@@ -46,6 +51,10 @@ public:
     static void deepIn();
 
     static void deepOut();
+
+    static void resetTraversal();
+    static void enterRecordedScope();
+    static void leaveRecordedScope();
 
     int getDepth() const;
 };
