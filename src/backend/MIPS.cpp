@@ -93,6 +93,17 @@ std::string optimizeAssembly(const std::string &assembly) {
             line = "  move " + reg + ", $zero";
         }
 
+        if (startsWith(line, "  move ")) {
+            size_t comma = line.find(", ", 7);
+            if (comma != std::string::npos) {
+                std::string dst = line.substr(7, comma - 7);
+                std::string src = line.substr(comma + 2);
+                if (dst == src) {
+                    continue;
+                }
+            }
+        }
+
         if (startsWith(line, "  j ") && i + 1 < lines.size()) {
             std::string target = line.substr(4);
             if (lines[i + 1] == target + ":") {
@@ -164,7 +175,7 @@ public:
                 }
                 if (canFuseICmpBranch(block->instructions, i)) {
                     emitICmpToReg(block->instructions[i], "$t0");
-                    emitCondBranchWithPhi(block->instructions[i + 1]);
+                    emitCondBranchWithPhi(block->instructions[i + 1], "$t0");
                     ++i;
                     continue;
                 }
@@ -183,9 +194,17 @@ private:
     std::unordered_map<std::string, std::vector<std::pair<IR::Operand, std::string>>> phiMoves_;
     std::unordered_map<std::string, int> useCounts_;
     std::set<std::string> neededValues_;
+    std::set<std::string> callLiveValues_;
     std::string currentBlock_;
     int edgeId_{0};
+    inline static const std::vector<std::string> callerSavedRegs_ = {
+            "$t3", "$t4", "$t5", "$t6", "$t7",
+    };
+    inline static const std::vector<std::string> calleeSavedRegs_ = {
+            "$s0", "$s1", "$s2", "$s3", "$s4", "$s5", "$s6", "$s7",
+    };
     inline static const std::vector<std::string> allocatableRegs_ = {
+            "$t3", "$t4", "$t5", "$t6", "$t7",
             "$s0", "$s1", "$s2", "$s3", "$s4", "$s5", "$s6", "$s7",
     };
 
@@ -243,7 +262,7 @@ private:
             used.insert(reg);
         }
         std::vector<std::string> ordered;
-        for (const auto &reg: allocatableRegs_) {
+        for (const auto &reg: calleeSavedRegs_) {
             if (used.find(reg) != used.end()) {
                 ordered.push_back(reg);
             }
@@ -268,6 +287,7 @@ private:
         }
 
         std::map<std::string, BlockLiveness> liveness = buildLiveness(values);
+        callLiveValues_ = collectCallLiveValues(values, liveness);
         std::map<std::string, ValueSet> graph = buildInterferenceGraph(values, liveness);
         colorInterferenceGraph(values, graph);
     }
@@ -444,6 +464,34 @@ private:
         return blocks;
     }
 
+    ValueSet collectCallLiveValues(const ValueSet &values, const std::map<std::string, BlockLiveness> &liveness) const {
+        ValueSet callLive;
+        for (const auto &blockPtr: function_.blocks) {
+            const auto &block = *blockPtr;
+            ValueSet live = liveness.at(block.name).liveOut;
+            for (auto instIt = block.instructions.rbegin(); instIt != block.instructions.rend(); ++instIt) {
+                const auto &inst = *instIt;
+                bool hasDef = inst.opcode != IR::Opcode::Alloca && inst.hasResult() && values.find(inst.result) != values.end();
+                if (inst.opcode == IR::Opcode::Call) {
+                    ValueSet liveAcross = live;
+                    if (hasDef) {
+                        liveAcross.erase(inst.result);
+                    }
+                    callLive.insert(liveAcross.begin(), liveAcross.end());
+                }
+                if (hasDef) {
+                    live.erase(inst.result);
+                }
+                if (inst.opcode != IR::Opcode::Phi) {
+                    for (const auto &operand: inst.operands) {
+                        addOperandUse(operand, values, live);
+                    }
+                }
+            }
+        }
+        return callLive;
+    }
+
     static void addInterference(std::map<std::string, ValueSet> &graph,
                                 const std::string &lhs,
                                 const std::string &rhs) {
@@ -495,6 +543,10 @@ private:
         return graph;
     }
 
+    const std::vector<std::string> &allowedRegistersFor(const std::string &value) const {
+        return callLiveValues_.find(value) == callLiveValues_.end() ? allocatableRegs_ : calleeSavedRegs_;
+    }
+
     void colorInterferenceGraph(const ValueSet &values, const std::map<std::string, ValueSet> &graph) {
         const int k = static_cast<int>(allocatableRegs_.size());
         std::map<std::string, ValueSet> workGraph = graph;
@@ -543,7 +595,7 @@ private:
                     }
                 }
             }
-            for (const auto &reg: allocatableRegs_) {
+            for (const auto &reg: allowedRegistersFor(node)) {
                 if (unavailable.find(reg) == unavailable.end()) {
                     colors[node] = reg;
                     frame_.valueRegs[node] = reg;
@@ -644,8 +696,7 @@ private:
                 out_ << "  j " << labelFromOperand(inst.operands.front()) << "\n";
                 break;
             case IR::Opcode::CondBr:
-                loadOperand(inst.operands[0], "$t0");
-                emitCondBranchWithPhi(inst);
+                emitCondBranchWithPhi(inst, materializeOperand(inst.operands[0], "$t0"));
                 break;
             case IR::Opcode::Ret:
                 emitReturn(inst);
@@ -733,6 +784,16 @@ private:
         return it != phiMoves_.end() && !it->second.empty();
     }
 
+    std::string assignedRegister(const std::string &name) const {
+        auto it = frame_.valueRegs.find(name);
+        return it == frame_.valueRegs.end() ? "" : it->second;
+    }
+
+    std::string resultRegister(const std::string &name, const std::string &fallback) const {
+        std::string reg = assignedRegister(name);
+        return reg.empty() ? fallback : reg;
+    }
+
     std::string valueLocation(const std::string &name) const {
         auto regIt = frame_.valueRegs.find(name);
         if (regIt != frame_.valueRegs.end()) {
@@ -777,6 +838,36 @@ private:
         return false;
     }
 
+    void emitDirectPhiMove(const IR::Operand &value, const std::string &result) {
+        if (isPhysicalSelfMove(value, result)) {
+            return;
+        }
+
+        std::string destReg = assignedRegister(result);
+        if (!destReg.empty()) {
+            loadOperand(value, destReg);
+            return;
+        }
+
+        auto slotIt = frame_.valueSlots.find(result);
+        if (slotIt == frame_.valueSlots.end()) {
+            loadOperand(value, "$t8");
+            storeValue(result, "$t8");
+            return;
+        }
+
+        if (!value.text.empty() && value.text.front() == '%') {
+            std::string sourceReg = assignedRegister(value.text);
+            if (!sourceReg.empty()) {
+                out_ << "  sw " << sourceReg << ", " << slotIt->second << "($sp)\n";
+                return;
+            }
+        }
+
+        loadOperand(value, "$t8");
+        out_ << "  sw $t8, " << slotIt->second << "($sp)\n";
+    }
+
     void emitPhiMoves(const std::string &target) {
         auto it = phiMoves_.find(edgeKey(currentBlock_, target));
         if (it == phiMoves_.end()) {
@@ -784,11 +875,7 @@ private:
         }
         if (!needsParallelCopy(it->second)) {
             for (const auto &[value, result]: it->second) {
-                if (isPhysicalSelfMove(value, result)) {
-                    continue;
-                }
-                loadOperand(value, "$t8");
-                storeValue(result, "$t8");
+                emitDirectPhiMove(value, result);
             }
             return;
         }
@@ -814,21 +901,46 @@ private:
         }
     }
 
-    void emitCondBranchWithPhi(const IR::Instruction &inst) {
+    void emitCondBranchWithPhi(const IR::Instruction &inst, const std::string &condReg = "$t0") {
         std::string trueTarget = labelName(inst.operands[1]);
         std::string falseTarget = labelName(inst.operands[2]);
         if (!hasPhiMoves(trueTarget) && !hasPhiMoves(falseTarget)) {
-            out_ << "  bne $t0, $zero, " << labelOf(trueTarget) << "\n";
+            out_ << "  bne " << condReg << ", $zero, " << labelOf(trueTarget) << "\n";
             out_ << "  j " << labelOf(falseTarget) << "\n";
             return;
         }
         std::string trueEdge = sanitizeLabel(function_.name + "_" + currentBlock_ + "_to_" + trueTarget + "_" + std::to_string(edgeId_++));
-        out_ << "  bne $t0, $zero, " << trueEdge << "\n";
+        out_ << "  bne " << condReg << ", $zero, " << trueEdge << "\n";
         emitPhiMoves(falseTarget);
         out_ << "  j " << labelOf(falseTarget) << "\n";
         out_ << trueEdge << ":\n";
         emitPhiMoves(trueTarget);
         out_ << "  j " << labelOf(trueTarget) << "\n";
+    }
+
+    std::string materializeOperand(const IR::Operand &operand, const std::string &scratch) {
+        if (!operand.text.empty() && operand.text.front() == '%' && operand.type != "ptr") {
+            std::string reg = assignedRegister(operand.text);
+            if (!reg.empty()) {
+                return reg;
+            }
+        }
+        if (operand.type == "ptr") {
+            return materializePointerAddress(operand, scratch);
+        }
+        loadOperand(operand, scratch);
+        return scratch;
+    }
+
+    std::string materializePointerAddress(const IR::Operand &operand, const std::string &scratch) {
+        if (!operand.text.empty() && operand.text.front() == '%') {
+            std::string reg = assignedRegister(operand.text);
+            if (!reg.empty()) {
+                return reg;
+            }
+        }
+        loadPointerAddress(operand, scratch);
+        return scratch;
     }
 
     void loadOperand(const IR::Operand &operand, const std::string &reg) {
@@ -905,96 +1017,98 @@ private:
 
     void emitLoad(const IR::Instruction &inst) {
         const auto &ptr = inst.operands.front();
+        std::string dest = resultRegister(inst.result, "$t0");
         if (!ptr.text.empty() && ptr.text.front() == '@') {
-            out_ << "  " << (inst.type == "i8" ? "lbu" : "lw") << " $t0, " << stripPrefix(ptr.text) << "\n";
+            out_ << "  " << (inst.type == "i8" ? "lbu" : "lw") << " " << dest << ", " << stripPrefix(ptr.text) << "\n";
         } else if (frame_.pointerSlots.find(ptr.text) != frame_.pointerSlots.end()) {
             auto it = frame_.pointerSlots.find(ptr.text);
-            out_ << "  " << (inst.type == "i8" ? "lbu" : "lw") << " $t0, " << it->second << "($sp)\n";
+            out_ << "  " << (inst.type == "i8" ? "lbu" : "lw") << " " << dest << ", " << it->second << "($sp)\n";
         } else {
-            loadPointerAddress(ptr, "$t9");
-            out_ << "  " << (inst.type == "i8" ? "lbu" : "lw") << " $t0, 0($t9)\n";
+            std::string addr = materializePointerAddress(ptr, "$t9");
+            out_ << "  " << (inst.type == "i8" ? "lbu" : "lw") << " " << dest << ", 0(" << addr << ")\n";
         }
-        storeValue(inst.result, "$t0");
+        storeValue(inst.result, dest);
     }
 
     void emitStore(const IR::Instruction &inst) {
-        loadOperand(inst.operands[0], "$t0");
+        std::string value = materializeOperand(inst.operands[0], "$t0");
         const auto &ptr = inst.operands[1];
         if (!ptr.text.empty() && ptr.text.front() == '@') {
-            out_ << "  " << (inst.operands[0].type == "i8" ? "sb" : "sw") << " $t0, " << stripPrefix(ptr.text) << "\n";
+            out_ << "  " << (inst.operands[0].type == "i8" ? "sb" : "sw") << " " << value << ", " << stripPrefix(ptr.text) << "\n";
         } else if (frame_.pointerSlots.find(ptr.text) != frame_.pointerSlots.end()) {
             auto it = frame_.pointerSlots.find(ptr.text);
-            out_ << "  " << (inst.operands[0].type == "i8" ? "sb" : "sw") << " $t0, " << it->second << "($sp)\n";
+            out_ << "  " << (inst.operands[0].type == "i8" ? "sb" : "sw") << " " << value << ", " << it->second << "($sp)\n";
         } else {
-            loadPointerAddress(ptr, "$t9");
-            out_ << "  " << (inst.operands[0].type == "i8" ? "sb" : "sw") << " $t0, 0($t9)\n";
+            std::string addr = materializePointerAddress(ptr, "$t9");
+            out_ << "  " << (inst.operands[0].type == "i8" ? "sb" : "sw") << " " << value << ", 0(" << addr << ")\n";
         }
     }
 
     void emitGetElementPtr(const IR::Instruction &inst) {
-        loadPointerAddress(inst.operands[0], "$t0");
-        loadOperand(inst.operands[1], "$t1");
+        std::string base = materializePointerAddress(inst.operands[0], "$t0");
+        std::string index = materializeOperand(inst.operands[1], "$t1");
         if (inst.note == "i32") {
-            out_ << "  sll $t1, $t1, 2\n";
+            out_ << "  sll $t1, " << index << ", 2\n";
+            index = "$t1";
         }
-        out_ << "  addu $t2, $t0, $t1\n";
-        storeValue(inst.result, "$t2");
+        std::string dest = resultRegister(inst.result, "$t2");
+        out_ << "  addu " << dest << ", " << base << ", " << index << "\n";
+        storeValue(inst.result, dest);
     }
 
     void emitBinary(const IR::Instruction &inst) {
-        loadOperand(inst.operands[0], "$t0");
-        loadOperand(inst.operands[1], "$t1");
+        std::string lhs = materializeOperand(inst.operands[0], "$t0");
+        std::string rhs = materializeOperand(inst.operands[1], "$t1");
+        std::string dest = resultRegister(inst.result, "$t2");
         if (inst.op == "add") {
-            out_ << "  addu $t2, $t0, $t1\n";
+            out_ << "  addu " << dest << ", " << lhs << ", " << rhs << "\n";
         } else if (inst.op == "sub") {
-            out_ << "  subu $t2, $t0, $t1\n";
+            out_ << "  subu " << dest << ", " << lhs << ", " << rhs << "\n";
         } else if (inst.op == "mul") {
-            out_ << "  mul $t2, $t0, $t1\n";
+            out_ << "  mul " << dest << ", " << lhs << ", " << rhs << "\n";
         } else if (inst.op == "sdiv") {
-            out_ << "  div $t0, $t1\n";
-            out_ << "  mflo $t2\n";
+            out_ << "  div " << lhs << ", " << rhs << "\n";
+            out_ << "  mflo " << dest << "\n";
         } else if (inst.op == "srem") {
-            out_ << "  div $t0, $t1\n";
-            out_ << "  mfhi $t2\n";
+            out_ << "  div " << lhs << ", " << rhs << "\n";
+            out_ << "  mfhi " << dest << "\n";
         } else if (inst.op == "and") {
-            out_ << "  and $t2, $t0, $t1\n";
+            out_ << "  and " << dest << ", " << lhs << ", " << rhs << "\n";
         } else if (inst.op == "or") {
-            out_ << "  or $t2, $t0, $t1\n";
+            out_ << "  or " << dest << ", " << lhs << ", " << rhs << "\n";
         } else {
             out_ << "  # unsupported binary op " << inst.op << "\n";
-            out_ << "  move $t2, $zero\n";
+            out_ << "  move " << dest << ", $zero\n";
         }
-        storeValue(inst.result, "$t2");
+        storeValue(inst.result, dest);
     }
 
     void emitICmp(const IR::Instruction &inst) {
-        emitICmpToReg(inst, "$t2");
-        storeValue(inst.result, "$t2");
+        std::string dest = resultRegister(inst.result, "$t2");
+        emitICmpToReg(inst, dest);
+        storeValue(inst.result, dest);
     }
 
     void emitICmpToReg(const IR::Instruction &inst, const std::string &dest) {
-        loadOperand(inst.operands[0], "$t0");
-        loadOperand(inst.operands[1], "$t1");
+        std::string lhs = materializeOperand(inst.operands[0], "$t0");
+        std::string rhs = materializeOperand(inst.operands[1], "$t1");
         if (inst.op == "slt") {
-            out_ << "  slt $t2, $t0, $t1\n";
+            out_ << "  slt " << dest << ", " << lhs << ", " << rhs << "\n";
         } else if (inst.op == "sgt") {
-            out_ << "  slt $t2, $t1, $t0\n";
+            out_ << "  slt " << dest << ", " << rhs << ", " << lhs << "\n";
         } else if (inst.op == "sle") {
-            out_ << "  slt $t2, $t1, $t0\n";
-            out_ << "  xori $t2, $t2, 1\n";
+            out_ << "  slt " << dest << ", " << rhs << ", " << lhs << "\n";
+            out_ << "  xori " << dest << ", " << dest << ", 1\n";
         } else if (inst.op == "sge") {
-            out_ << "  slt $t2, $t0, $t1\n";
-            out_ << "  xori $t2, $t2, 1\n";
+            out_ << "  slt " << dest << ", " << lhs << ", " << rhs << "\n";
+            out_ << "  xori " << dest << ", " << dest << ", 1\n";
         } else if (inst.op == "eq") {
-            out_ << "  seq $t2, $t0, $t1\n";
+            out_ << "  seq " << dest << ", " << lhs << ", " << rhs << "\n";
         } else if (inst.op == "ne") {
-            out_ << "  sne $t2, $t0, $t1\n";
+            out_ << "  sne " << dest << ", " << lhs << ", " << rhs << "\n";
         } else {
             out_ << "  # unsupported icmp " << inst.op << "\n";
-            out_ << "  move $t2, $zero\n";
-        }
-        if (dest != "$t2") {
-            out_ << "  move " << dest << ", $t2\n";
+            out_ << "  move " << dest << ", $zero\n";
         }
     }
 
@@ -1002,22 +1116,25 @@ private:
                                        const IR::Instruction &cmp,
                                        const IR::Instruction &branch) {
         int divisor = std::stoi(rem.operands[1].text);
-        loadOperand(rem.operands[0], "$t0");
-        out_ << "  andi $t2, $t0, " << (divisor - 1) << "\n";
+        std::string value = materializeOperand(rem.operands[0], "$t0");
+        out_ << "  andi $t0, " << value << ", " << (divisor - 1) << "\n";
         if (cmp.op == "eq") {
-            out_ << "  seq $t0, $t2, $zero\n";
+            out_ << "  seq $t0, $t0, $zero\n";
         } else {
-            out_ << "  sne $t0, $t2, $zero\n";
+            out_ << "  sne $t0, $t0, $zero\n";
         }
         emitCondBranchWithPhi(branch);
     }
 
     void emitCast(const IR::Instruction &inst) {
-        loadOperand(inst.operands.front(), "$t0");
+        std::string source = materializeOperand(inst.operands.front(), "$t0");
+        std::string dest = resultRegister(inst.result, "$t0");
         if (inst.op == "trunc") {
-            out_ << "  andi $t0, $t0, 255\n";
+            out_ << "  andi " << dest << ", " << source << ", 255\n";
+        } else if (dest != source) {
+            out_ << "  move " << dest << ", " << source << "\n";
         }
-        storeValue(inst.result, "$t0");
+        storeValue(inst.result, dest);
     }
 
     void emitCall(const IR::Instruction &inst) {
