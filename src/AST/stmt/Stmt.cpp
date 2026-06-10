@@ -4,11 +4,13 @@
 
 #include "Stmt.h"
 
+#include "AST/ASTState.h"
 #include "AST/decl/Decl.h"
 #include "AST/expr/Exp.h"
 #include "AST/IRGenUtil.h"
 #include "backend/Instruction.h"
 #include "errorHandler/Error.h"
+#include "frontend/lexer/Lexer.h"
 #include "frontend/parser/Parser.h"
 #include "frontend/symTab/SymTab.h"
 
@@ -17,6 +19,8 @@
 using namespace Parser;
 
 namespace {
+int switchIdAllocator = 0;
+
 void storeToLVal(IR::BasicBlocks &bBlocks, const LVal &lVal, std::unique_ptr<IR::Temp> value) {
     using namespace IR;
 
@@ -102,6 +106,21 @@ int ControlFlow::loopDepth = 0;
 int ControlFlow::switchDepth = 0;
 std::stack<IR::Label> ControlFlow::breakLabels{};
 std::stack<IR::Label> ControlFlow::continueLabels{};
+
+void ASTState::reset() {
+    Stmt::retVoid = false;
+    Stmt::retType = Type::Void;
+    ControlFlow::loopDepth = 0;
+    ControlFlow::switchDepth = 0;
+    ControlFlow::breakLabels = {};
+    ControlFlow::continueLabels = {};
+    Block::lastRow = 0;
+    BigForStmt::inForDepth = 0;
+    BigForStmt::stackEndLabel = {};
+    BigForStmt::stackIterLabel = {};
+    ReturnStmt::inMainGen = false;
+    switchIdAllocator = 0;
+}
 
 std::unique_ptr<Stmt> Stmt::parse() {
     std::unique_ptr<Stmt> n;
@@ -474,8 +493,7 @@ std::unique_ptr<SwitchStmt> SwitchStmt::parse() {
 void SwitchStmt::genIR(IR::BasicBlocks &bBlocks) {
     using namespace IR;
     auto value = exp->genIR(bBlocks);
-    static int switchId = 0;
-    std::string switchName = "__switch_" + std::to_string(switchId++);
+    std::string switchName = "__switch_" + std::to_string(switchIdAllocator++);
     int switchDepth = SymTab::currentDepth();
     auto switchVar = std::make_unique<Var>(switchName, switchDepth, false, std::vector<int>{}, value->type);
     auto switchVarCopy = std::make_unique<Var>(*switchVar);

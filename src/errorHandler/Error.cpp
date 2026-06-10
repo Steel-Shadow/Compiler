@@ -7,10 +7,20 @@
 #include <iostream>
 
 #include "config.h"
+#include "frontend/lexer/Lexer.h"
 
 bool Error::hasError = false;
 std::ofstream Error::errorFileStream;
 std::set<std::pair<int, char>> Error::raisedErrors;
+
+void Error::reset() {
+    hasError = false;
+    raisedErrors.clear();
+}
+
+void Error::raise(char code) {
+    raise(code, Lexer::curRow);
+}
 
 void Error::raise(char code, int row) {
     auto [_, inserted] = raisedErrors.emplace(row, code);

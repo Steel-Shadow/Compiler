@@ -7,6 +7,7 @@
 #include "backend/Register.h"
 #include "errorHandler/Error.h"
 #include "Exp.h"
+#include "frontend/lexer/Lexer.h"
 #include "frontend/parser/Parser.h"
 #include "frontend/symTab/SymTab.h"
 
@@ -48,6 +49,20 @@ bool canStartExp(LexType type) {
             return true;
         default:
             return false;
+    }
+}
+
+UnaryOp unaryOpFromLexType(LexType type) {
+    switch (type) {
+        case LexType::PLUS:
+            return UnaryOp::Plus;
+        case LexType::MINU:
+            return UnaryOp::Minus;
+        case LexType::NOT:
+            return UnaryOp::Not;
+        default:
+            Error::raise("Bad unary operator");
+            return UnaryOp::Plus;
     }
 }
 
@@ -353,7 +368,7 @@ std::unique_ptr<UnaryExp> UnaryExp::parse() {
             case LexType::MINU:
             case LexType::NOT:
                 // UnaryOp → '+' | '−' | '!'
-                n->ops.push_back(Lexer::curLexType);
+                n->ops.push_back(unaryOpFromLexType(Lexer::curLexType));
                 Lexer::next();
 
                 output(AST::UnaryOp);
@@ -407,10 +422,15 @@ std::unique_ptr<UnaryExp> UnaryExp::parse() {
 
 int UnaryExp::evaluate() const {
     int val = baseUnaryExp->evaluate();
+    if (Exp::getNonConstValueInEvaluate) {
+        return 0;
+    }
 
-    for (auto op: ops) {
-        if (op == LexType::MINU) {
+    for (auto op = ops.rbegin(); op != ops.rend(); ++op) {
+        if (*op == UnaryOp::Minus) {
             val = -val;
+        } else if (*op == UnaryOp::Not) {
+            val = !val;
         }
     }
 
@@ -438,8 +458,8 @@ std::unique_ptr<IR::Temp> UnaryExp::genIR(IR::BasicBlocks &bBlocks) const {
     using namespace IR;
     auto res = baseUnaryExp->genIR(bBlocks);
 
-    for (LexType op: ops) {
-        if (op == LexType::MINU) {
+    for (auto op = ops.rbegin(); op != ops.rend(); ++op) {
+        if (*op == UnaryOp::Minus) {
             auto negRes = std::make_unique<Temp>(res->type);
             bBlocks.back()->addInst(Inst(
                     Op::Neg,
@@ -447,7 +467,7 @@ std::unique_ptr<IR::Temp> UnaryExp::genIR(IR::BasicBlocks &bBlocks) const {
                     std::move(res),
                     nullptr));
             res = std::move(negRes);
-        } else if (op == LexType::NOT) {
+        } else if (*op == UnaryOp::Not) {
             auto notRes = std::make_unique<Temp>(Type::Int);
             bBlocks.back()->addInst(Inst(
                     Op::Not,
@@ -469,8 +489,8 @@ LVal *UnaryExp::getLVal() const {
 }
 
 Type UnaryExp::getType() const {
-    for (LexType op: ops) {
-        if (op == LexType::NOT) {
+    for (UnaryOp op: ops) {
+        if (op == UnaryOp::Not) {
             return Type::Int;
         }
     }

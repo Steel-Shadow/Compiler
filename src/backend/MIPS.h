@@ -51,6 +51,7 @@ bool allMergeMove_R_rs();
 bool allMergeR_Move();
 
 void genMIPS(const IR::Module &module);
+void reset();
 
 void output(const std::string &str, bool newLine = true);
 

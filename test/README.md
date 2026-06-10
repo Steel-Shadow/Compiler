@@ -30,6 +30,7 @@ Useful commands:
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 
+
 # Clone/generate testcase-2026, then run 2026 correct + error frontend checks
 python3 test/run_testcase_2026.py --prepare --suite 2026
 
@@ -43,11 +44,13 @@ python3 test/run_testcase_2026.py --suite all --limit 20
 curl -L -o test/vendor/Mars-2024.jar https://github.com/Lord-Turmoil/Mars-for-BUAA/releases/download/v1.0.1/Mars-2024.jar
 
 # Execute generated MIPS with Mars and compare ans.txt
-python3 test/run_testcase_2026.py --suite 2026 --mars-jar test/vendor/Mars-2024.jar
+python3 test/run_testcase_2026.py --suite 2026
 ```
 
-Without `--mars-jar`, correct cases only check that compilation succeeds and
-`error.txt` is empty. Error cases always compare `error.txt`.
+If `--mars-jar` is omitted, the harness automatically looks for a Mars jar in
+`test/` and `test/vendor/`. If none is found, correct cases only check that
+compilation succeeds and `error.txt` is empty. Error cases always compare
+`error.txt`.
 
 When `--mars-jar` is used, pure `get_int` inputs are normalized from
 whitespace-separated integers to one integer per line for Mars syscall 5. The

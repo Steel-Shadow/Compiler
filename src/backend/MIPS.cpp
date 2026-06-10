@@ -20,6 +20,15 @@ int MIPS::curDepth = 1;
 std::ofstream MIPS::mipsFileStream;
 std::vector<std::unique_ptr<Assembly>> MIPS::assemblies; // maybe use List is faster in optimization
 
+void MIPS::reset() {
+    curDepth = 1;
+    assemblies.clear();
+    clearRegs();
+    StackMemory::varToOffset.clear();
+    StackMemory::curOffset = 0;
+    StackMemory::offsetStack = std::stack<int>{};
+}
+
 void MIPS::output(const std::string &str, bool newLine) {
 #if defined(FILEOUT_MIPS)
     mipsFileStream << str;
@@ -46,6 +55,8 @@ std::string Label::toString() {
 }
 
 void MIPS::genMIPS(const IR::Module &module) {
+    reset();
+
     /*---- .data generate & output ----------------------*/
     output("#### MIPS ####");
     output(".data");

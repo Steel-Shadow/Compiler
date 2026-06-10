@@ -30,10 +30,12 @@ class SymTab {
     static std::list<SymTab *> symTabs;
     static std::vector<std::set<std::pair<std::string, int>>> generatedVars;
     static std::vector<ValueSymbol *> staticVars;
+    static int staticStorageId;
 
 public:
     explicit SymTab(SymTab *prev);
 
+    static void reset();
     static void resetToGlobal();
     static int currentDepth();
     static SymTab *currentParent();
@@ -51,6 +53,7 @@ public:
     static void recordGeneratedVar(const std::string &ident, int depth);
 
     static const std::vector<ValueSymbol *> &getStaticVars();
+    static std::string nextStaticStorageName(const std::string &ident);
 
     static void addBuiltins();
 

@@ -6,12 +6,13 @@
 #define COMPILER_PARSER_H
 
 #include "AST/AST.h"
-#include "frontend/lexer/Lexer.h"
+#include "frontend/lexer/LexType.h"
 
 // Specific parser method is distributed in respective class.
 namespace Parser {
-// check the type and Lexer::next()
-void singleLex(LexType type, int row = Lexer::curRow);
+// check the current token and advance on match
+void singleLex(LexType type);
+void singleLex(LexType type, int row);
 
 void output(AST type);
 } // namespace Parser

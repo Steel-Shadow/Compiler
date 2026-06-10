@@ -7,6 +7,7 @@
 
 #include "AST/stmt/Stmt.h"
 #include "Def.h"
+#include "frontend/lexer/LexType.h"
 
 
 #include <memory>

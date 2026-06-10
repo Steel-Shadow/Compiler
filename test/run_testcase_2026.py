@@ -7,16 +7,26 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_REPO_URL = "git@github.com:compile-technology-buaa/testcase-2026.git"
 DEFAULT_REPO = ROOT / "test" / "vendor" / "testcase-2026"
 DEFAULT_WORK = ROOT / "test" / "work" / "testcase-2026"
 DEFAULT_COMPILER = ROOT / "build" / "src" / "Compiler"
+MARS_JAR_PATTERNS = ("Mars*.jar", "mars*.jar", "*Mars*.jar", "*mars*.jar")
 
 
 def default_jobs():
-    return min(max((os.cpu_count() or 2) // 2, 1), 8)
+    return min(max((os.cpu_count() - 1 or 1), 1), 8)
+
+
+def find_default_mars_jar():
+    candidates = []
+    for directory in (SCRIPT_DIR, SCRIPT_DIR / "vendor"):
+        for pattern in MARS_JAR_PATTERNS:
+            candidates.extend(directory.glob(pattern))
+    jars = sorted({path.resolve() for path in candidates if path.is_file()})
+    return jars[0] if jars else None
 
 
 def run(cmd, cwd=None, env=None, timeout=None, stdin_path=None):
@@ -118,9 +128,9 @@ def discover_cases(generated, suite):
             e for e in errors if case_name(e, generated).startswith("err_2026/")
         ]
     if suite == "regression":
-        return [c for c in correct if case_name(c, generated).startswith("regression/")], [
-            e for e in errors if case_name(e, generated).startswith("err_regression/")
-        ]
+        return [
+            c for c in correct if case_name(c, generated).startswith("regression/")
+        ], [e for e in errors if case_name(e, generated).startswith("err_regression/")]
     if suite == "correct":
         return correct, []
     if suite == "errors":
@@ -190,7 +200,9 @@ def mars_input_path(case_dir, out_dir):
     input_path = case_dir / "in.txt"
     source = text(case_dir / "testfile.txt")
     uses_int_input = re.search(r"\b(get_int|getint)\s*\(", source) is not None
-    uses_other_input = re.search(r"\b(get_char|getchar|get_string)\s*\(", source) is not None
+    uses_other_input = (
+        re.search(r"\b(get_char|getchar|get_string)\s*\(", source) is not None
+    )
     if not uses_int_input or uses_other_input:
         return input_path
 
@@ -203,20 +215,27 @@ def mars_input_path(case_dir, out_dir):
     return normalized_path
 
 
-def run_correct_case(compiler, case_dir, generated, work_root, timeout, mars_jar, mars_timeout):
+def run_correct_case(
+    compiler, case_dir, generated, work_root, timeout, mars_jar, mars_timeout
+):
     name = case_name(case_dir, generated)
     out_dir = work_root / name
     result = run_compiler(compiler, case_dir / "testfile.txt", out_dir, timeout)
     actual_error = text(out_dir / "error.txt")
     if result.returncode != 0:
-        return False, f"compiler exited {result.returncode}: {result.stderr.decode(errors='replace')}"
+        return (
+            False,
+            f"compiler exited {result.returncode}: {result.stderr.decode(errors='replace')}",
+        )
     if actual_error.splitlines():
         return False, f"expected no errors, got:\n{actual_error}"
 
     if mars_jar is None:
         return True, ""
 
-    mars = run_mars(mars_jar, out_dir / "mips.txt", mars_input_path(case_dir, out_dir), mars_timeout)
+    mars = run_mars(
+        mars_jar, out_dir / "mips.txt", mars_input_path(case_dir, out_dir), mars_timeout
+    )
     if mars.returncode != 0:
         return False, (
             f"Mars exited {mars.returncode}\n"
@@ -226,7 +245,10 @@ def run_correct_case(compiler, case_dir, generated, work_root, timeout, mars_jar
     actual = mars.stdout.decode(errors="replace").replace("\r\n", "\n")
     expected = text(case_dir / "ans.txt")
     if not same_runtime_output(actual, expected):
-        return False, f"runtime output mismatch\nexpected:\n{expected}\nactual:\n{actual}"
+        return (
+            False,
+            f"runtime output mismatch\nexpected:\n{expected}\nactual:\n{actual}",
+        )
     return True, ""
 
 
@@ -243,7 +265,9 @@ def run_case(order, kind, index, total, case_dir, args, generated):
             args.mars_timeout,
         )
     else:
-        ok, detail = run_error_case(args.compiler, case_dir, generated, args.work_dir, args.timeout)
+        ok, detail = run_error_case(
+            args.compiler, case_dir, generated, args.work_dir, args.timeout
+        )
     return order, kind, index, total, name, ok, detail
 
 
@@ -268,13 +292,18 @@ def run_selected_cases(correct, errors, args, generated):
         for job in jobs:
             result = run_case(*job, args, generated)
             order, kind, index, total, name, ok, detail = result
-            print(f"[{kind} {index}/{total}] {'PASS' if ok else 'FAIL'} {name}", flush=True)
+            print(
+                f"[{kind} {index}/{total}] {'PASS' if ok else 'FAIL'} {name}",
+                flush=True,
+            )
             if not ok:
                 failures.append((order, name, detail))
         return failures
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(run_case, *job, args, generated): job for job in jobs}
+        futures = {
+            executor.submit(run_case, *job, args, generated): job for job in jobs
+        }
         for future in as_completed(futures):
             job = futures[future]
             try:
@@ -284,26 +313,37 @@ def run_selected_cases(correct, errors, args, generated):
                 name = case_name(case_dir, generated)
                 ok = False
                 detail = f"test runner failed: {exc!r}"
-            print(f"[{kind} {index}/{total}] {'PASS' if ok else 'FAIL'} {name}", flush=True)
+            print(
+                f"[{kind} {index}/{total}] {'PASS' if ok else 'FAIL'} {name}",
+                flush=True,
+            )
             if not ok:
                 failures.append((order, name, detail))
     return failures
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run compiler tests from testcase-2026.")
+    parser = argparse.ArgumentParser(
+        description="Run compiler tests from testcase-2026."
+    )
     parser.add_argument("--repo", type=Path, default=DEFAULT_REPO)
     parser.add_argument("--repo-url", default=DEFAULT_REPO_URL)
     parser.add_argument("--compiler", type=Path, default=DEFAULT_COMPILER)
     parser.add_argument("--work-dir", type=Path, default=DEFAULT_WORK)
-    parser.add_argument("--prepare", action="store_true", help="clone and/or generate testcase data")
+    parser.add_argument(
+        "--prepare", action="store_true", help="clone and/or generate testcase data"
+    )
     parser.add_argument(
         "--suite",
         choices=["all", "2026", "regression", "correct", "errors"],
         default="all",
     )
-    parser.add_argument("--filter", help="only run cases whose generated path contains this text")
-    parser.add_argument("--limit", type=int, help="limit number of correct and error cases separately")
+    parser.add_argument(
+        "--filter", help="only run cases whose generated path contains this text"
+    )
+    parser.add_argument(
+        "--limit", type=int, help="limit number of correct and error cases separately"
+    )
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--mars-timeout", type=float, default=15.0)
     parser.add_argument("--mars-jar", type=Path)
@@ -319,9 +359,13 @@ def main():
     if args.jobs < 1:
         raise SystemExit("--jobs must be at least 1")
     if not args.compiler.exists():
-        raise SystemExit(f"Compiler not found: {args.compiler}. Build it first with `cmake --build build`.")
+        raise SystemExit(
+            f"Compiler not found: {args.compiler}. Build it first with `cmake --build build`."
+        )
     if args.mars_jar is not None and not args.mars_jar.exists():
         raise SystemExit(f"Mars jar not found: {args.mars_jar}")
+    if args.mars_jar is None:
+        args.mars_jar = find_default_mars_jar()
 
     ensure_repo(args.repo, args.repo_url, args.prepare)
     generated = ensure_generated(args.repo, args.prepare)

@@ -304,9 +304,27 @@ bool Lexer::findAssignBeforeSemicolon() {
     return false;
 }
 
+void resetLexerState() {
+    for (size_t i = 0; i < Lexer::deep; ++i) {
+        words[i] = {LexType::LEX_EMPTY, ""};
+        Lexer::pos[i] = 0;
+        Lexer::column[i] = 0;
+        Lexer::row[i] = 1;
+    }
+
+    c = '\0';
+    posTemp = 0;
+    columnTemp = 0;
+    rowTemp = 1;
+    Lexer::lastRow = 1;
+    firstOutput = true;
+    lastLexType = LexType::LEX_EMPTY;
+    lastToken.clear();
+}
+
 void Lexer::init(const std::string &inFile, [[maybe_unused]] const std::string &outFile) {
+    resetLexerState();
     buildReserveWords();
-    lastRow = 1;
 
     auto inFileStream = std::ifstream(inFile);
     if (!inFileStream) {

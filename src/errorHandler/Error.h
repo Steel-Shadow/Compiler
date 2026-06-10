@@ -5,7 +5,7 @@
 #ifndef COMPILER_ERROR_H
 #define COMPILER_ERROR_H
 
-#include "frontend/lexer/Lexer.h"
+#include <fstream>
 #include <set>
 #include <string>
 #include <utility>
@@ -18,7 +18,10 @@ public:
     static std::ofstream errorFileStream;
     static std::set<std::pair<int, char>> raisedErrors;
 
-    static void raise(char code, int row = Lexer::curRow);
+    static void reset();
+
+    static void raise(char code);
+    static void raise(char code, int row);
 
     static void raise(const std::string &mes = "unnamed");
 };

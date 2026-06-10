@@ -24,33 +24,33 @@ std::unique_ptr<Exp> Exp::parse(bool cons) {
 
 bool Exp::getNonConstValueInEvaluate = false;
 
-IR::Op lexTypeToIROp(LexType type) {
-    switch (type) {
-        case LexType::PLUS:
+IR::Op binaryOpToIROp(BinaryOp op) {
+    switch (op) {
+        case BinaryOp::Add:
             return IR::Op::Add;
-        case LexType::MINU:
+        case BinaryOp::Sub:
             return IR::Op::Sub;
-        case LexType::MULT:
+        case BinaryOp::Mul:
             return IR::Op::Mul;
-        case LexType::DIV:
+        case BinaryOp::Div:
             return IR::Op::Div;
-        case LexType::MOD:
+        case BinaryOp::Mod:
             return IR::Op::Mod;
-        case LexType::AND:
+        case BinaryOp::And:
             return IR::Op::And;
-        case LexType::OR:
+        case BinaryOp::Or:
             return IR::Op::Or;
-        case LexType::LEQ:
+        case BinaryOp::Leq:
             return IR::Op::Leq;
-        case LexType::LSS:
+        case BinaryOp::Lss:
             return IR::Op::Lss;
-        case LexType::GEQ:
+        case BinaryOp::Geq:
             return IR::Op::Geq;
-        case LexType::GRE:
+        case BinaryOp::Gre:
             return IR::Op::Gre;
-        case LexType::EQL:
+        case BinaryOp::Eql:
             return IR::Op::Eql;
-        case LexType::NEQ:
+        case BinaryOp::Neq:
             return IR::Op::Neq;
         default:
             Error::raise("Bad IR Operator");
@@ -58,16 +58,27 @@ IR::Op lexTypeToIROp(LexType type) {
     }
 }
 
-bool opProducesInt(LexType type) {
-    return type == LexType::LSS || type == LexType::GRE || type == LexType::LEQ || type == LexType::GEQ
-           || type == LexType::EQL || type == LexType::NEQ || type == LexType::AND || type == LexType::OR;
+bool binaryOpProducesInt(BinaryOp op) {
+    switch (op) {
+        case BinaryOp::And:
+        case BinaryOp::Or:
+        case BinaryOp::Leq:
+        case BinaryOp::Lss:
+        case BinaryOp::Geq:
+        case BinaryOp::Gre:
+        case BinaryOp::Eql:
+        case BinaryOp::Neq:
+            return true;
+        default:
+            return false;
+    }
 }
 
 Type resolveMultiExpType(Type firstType,
                          size_t firstRemainingRank,
                          const std::vector<Type> &elementTypes,
                          const std::vector<size_t> &elementRemainingRanks,
-                         const std::vector<LexType> &ops) {
+                         const std::vector<BinaryOp> &ops) {
     bool typeMismatch = false;
     for (size_t i = 0; i < elementTypes.size(); ++i) {
         if (firstRemainingRank > 0 || elementRemainingRanks[i] > 0
@@ -81,7 +92,7 @@ Type resolveMultiExpType(Type firstType,
         Error::raise('e');
         return Type::Void;
     }
-    if (!ops.empty() && opProducesInt(ops.back())) {
+    if (!ops.empty() && binaryOpProducesInt(ops.back())) {
         return Type::Int;
     }
     return firstType;

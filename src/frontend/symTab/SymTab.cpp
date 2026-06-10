@@ -9,8 +9,20 @@ SymTab SymTab::global{nullptr};
 
 SymTab *SymTab::cur = &global;
 
+std::list<SymTab *> SymTab::symTabs;
 std::vector<std::set<std::pair<std::string, int>>> SymTab::generatedVars;
 std::vector<ValueSymbol *> SymTab::staticVars;
+int SymTab::staticStorageId = 0;
+
+void SymTab::reset() {
+    cur = &global;
+    generatedVars.clear();
+    staticVars.clear();
+    symTabs.clear();
+    staticStorageId = 0;
+    global.next.clear();
+    global.symbols.clear();
+}
 
 void SymTab::resetToGlobal() {
     cur = &global;
@@ -68,6 +80,10 @@ const std::vector<ValueSymbol *> &SymTab::getStaticVars() {
     return staticVars;
 }
 
+std::string SymTab::nextStaticStorageName(const std::string &ident) {
+    return "__static_" + ident + "_" + std::to_string(staticStorageId++);
+}
+
 void SymTab::enterGeneratedVarScope() {
     generatedVars.emplace_back();
 }
@@ -95,9 +111,6 @@ void SymTab::addBuiltins() {
     addBuiltin("put_string", Type::Void, {{"str", Type::CharPtr, {0}}});
     addBuiltin("put_str", Type::Void, {{"str", Type::CharPtr, {0}}});
 }
-
-
-std::list<SymTab *> SymTab::symTabs;
 
 void SymTab::deepIn() {
     auto &newSymTab = cur->next.emplace_back(std::make_unique<SymTab>(cur));

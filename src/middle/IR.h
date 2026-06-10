@@ -17,6 +17,8 @@
 namespace IR {
 extern std::ofstream IRFileStream;
 
+void reset();
+
 // @formatter:off
 enum class Op {
     // not a valid Op, only for init
@@ -158,6 +160,7 @@ struct ConstVal : public Element {
 // str_{id}
 struct Str : public Element {
     static std::vector<std::string> MIPS_strings;
+    static int idAllocator;
     int id;
 
     Str();
@@ -185,6 +188,7 @@ private:
 // like llvm, Label and Temp share id allocator
 // nameAndId: Function has no id
 struct Label : public Element {
+    static int idAllocator;
     std::string nameAndId; // nameAndId of BasicBlock
     explicit Label(std::string name, bool isFunc = false);
 

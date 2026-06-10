@@ -6,7 +6,11 @@
 
 #include "config.h"
 #include "errorHandler/Error.h"
+#include "frontend/lexer/Lexer.h"
 
+void Parser::singleLex(LexType type) {
+    singleLex(type, Lexer::curRow);
+}
 
 void Parser::singleLex(LexType type, int row) {
     if (Lexer::curLexType == type) {

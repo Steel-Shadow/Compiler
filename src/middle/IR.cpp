@@ -13,6 +13,14 @@ using namespace IR;
 
 std::ofstream IR::IRFileStream;
 std::vector<std::string> Str::MIPS_strings;
+int Str::idAllocator = 0;
+int Label::idAllocator = 0;
+
+void IR::reset() {
+    Str::MIPS_strings.clear();
+    Str::idAllocator = 0;
+    Label::idAllocator = 0;
+}
 
 Module::Module(std::string name) :
     name(std::move(name)) {}
@@ -145,8 +153,6 @@ std::string Inst::opToStr(Op anOperator) {
 
 
 Label::Label(std::string name, bool isFunc) {
-    static int idAllocator = 0;
-
     if (isFunc) {
         this->nameAndId = std::move(name);
     } else {
@@ -343,7 +349,6 @@ std::string ConstVal::toString() const {
 }
 
 Str::Str() {
-    static int idAllocator = 0;
     id = idAllocator++;
 }
 

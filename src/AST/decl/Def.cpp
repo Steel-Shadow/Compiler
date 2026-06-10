@@ -6,6 +6,7 @@
 #include "AST/IRGenUtil.h"
 #include "Decl.h"
 #include "errorHandler/Error.h"
+#include "frontend/lexer/Lexer.h"
 #include "frontend/parser/Parser.h"
 #include "frontend/symTab/SymTab.h"
 
@@ -41,8 +42,7 @@ std::unique_ptr<Def> Def::parse(bool cons, Type type, bool statik) {
 
     std::string storageName;
     if (statik && !redefined) {
-        static int staticId = 0;
-        storageName = "__static_" + n->ident + "_" + std::to_string(staticId++);
+        storageName = SymTab::nextStaticStorageName(n->ident);
     }
 
     std::vector<int>::size_type size = 1;

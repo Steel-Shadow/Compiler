@@ -5,6 +5,7 @@
 #include "Func.h"
 
 #include "errorHandler/Error.h"
+#include "frontend/lexer/Lexer.h"
 #include "frontend/parser/Parser.h"
 #include "frontend/symTab/SymTab.h"
 

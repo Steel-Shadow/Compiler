@@ -5,7 +5,6 @@
 #ifndef COMPILER_EXP_H
 #define COMPILER_EXP_H
 
-#include "frontend/lexer/LexType.h"
 #include "middle/IR.h"
 
 
@@ -18,13 +17,35 @@ class FuncSymbol;
 struct FuncRParams;
 struct Exp;
 
-IR::Op lexTypeToIROp(LexType type);
-bool opProducesInt(LexType type);
+enum class BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    And,
+    Or,
+    Leq,
+    Lss,
+    Geq,
+    Gre,
+    Eql,
+    Neq,
+};
+
+enum class UnaryOp {
+    Plus,
+    Minus,
+    Not,
+};
+
+IR::Op binaryOpToIROp(BinaryOp op);
+bool binaryOpProducesInt(BinaryOp op);
 Type resolveMultiExpType(Type firstType,
                          size_t firstRemainingRank,
                          const std::vector<Type> &elementTypes,
                          const std::vector<size_t> &elementRemainingRanks,
-                         const std::vector<LexType> &ops);
+                         const std::vector<BinaryOp> &ops);
 
 struct BaseUnaryExp {
     virtual ~BaseUnaryExp() = default;
@@ -74,7 +95,7 @@ size_t remainingRankOf(LVal *lVal);
 // UnaryExp → {UnaryOp} ( PrimaryExp | Ident '(' [FuncRParams] ')' )
 // Note: UnaryOp is not a separate class!
 struct UnaryExp {
-    std::vector<LexType> ops;
+    std::vector<UnaryOp> ops;
     std::unique_ptr<BaseUnaryExp> baseUnaryExp;
 
     static std::unique_ptr<UnaryExp> parse();
@@ -151,7 +172,7 @@ struct Number : public PrimaryExp {
 template<class T>
 struct MultiExp {
     std::unique_ptr<T> first;
-    std::vector<LexType> ops;
+    std::vector<BinaryOp> ops;
     std::vector<std::unique_ptr<T>> elements;
 
     std::unique_ptr<IR::Temp> genIR(IR::BasicBlocks &bBlocks) const {
@@ -160,12 +181,12 @@ struct MultiExp {
         for (size_t i = 0; i < ops.size(); ++i) {
             auto t = elements[i]->genIR(bBlocks);
             Type resultType = ptrToValue(lastRes->type);
-            if (opProducesInt(ops[i])) {
+            if (binaryOpProducesInt(ops[i])) {
                 resultType = Type::Int;
             }
             auto res = std::make_unique<Temp>(resultType);
             bBlocks.back()->addInst(Inst(
-                    lexTypeToIROp(ops[i]),
+                    binaryOpToIROp(ops[i]),
                     std::make_unique<Temp>(*res),
                     std::move(lastRes),
                     std::move(t)));

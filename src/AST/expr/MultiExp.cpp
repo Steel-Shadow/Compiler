@@ -1,10 +1,48 @@
 //
 // Created by Steel_Shadow on 2023/10/12.
 //
+#include "errorHandler/Error.h"
 #include "Exp.h"
+#include "frontend/lexer/Lexer.h"
 #include "frontend/parser/Parser.h"
 
 using namespace Parser;
+
+namespace {
+BinaryOp binaryOpFromLexType(LexType type) {
+    switch (type) {
+        case LexType::PLUS:
+            return BinaryOp::Add;
+        case LexType::MINU:
+            return BinaryOp::Sub;
+        case LexType::MULT:
+            return BinaryOp::Mul;
+        case LexType::DIV:
+            return BinaryOp::Div;
+        case LexType::MOD:
+            return BinaryOp::Mod;
+        case LexType::AND:
+            return BinaryOp::And;
+        case LexType::OR:
+            return BinaryOp::Or;
+        case LexType::LEQ:
+            return BinaryOp::Leq;
+        case LexType::LSS:
+            return BinaryOp::Lss;
+        case LexType::GEQ:
+            return BinaryOp::Geq;
+        case LexType::GRE:
+            return BinaryOp::Gre;
+        case LexType::EQL:
+            return BinaryOp::Eql;
+        case LexType::NEQ:
+            return BinaryOp::Neq;
+        default:
+            Error::raise("Bad binary operator");
+            return BinaryOp::Add;
+    }
+}
+} // namespace
 
 std::unique_ptr<Cond> Cond::parse() {
     auto n = std::make_unique<Cond>();
@@ -27,7 +65,7 @@ std::unique_ptr<MulExp> MulExp::parse() {
     output(AST::MulExp);
 
     while (Lexer::curLexType == LexType::MULT || Lexer::curLexType == LexType::DIV || Lexer::curLexType == LexType::MOD) {
-        n->ops.push_back(Lexer::curLexType);
+        n->ops.push_back(binaryOpFromLexType(Lexer::curLexType));
         Lexer::next();
         n->elements.push_back(UnaryExp::parse());
         output(AST::MulExp);
@@ -47,14 +85,14 @@ int MulExp::evaluate() const {
         if (Exp::getNonConstValueInEvaluate) {
             return 0;
         }
-        if (op == LexType::MULT) {
+        if (op == BinaryOp::Mul) {
             val *= e;
-        } else if (op == LexType::DIV) {
+        } else if (op == BinaryOp::Div) {
             if (e == 0) {
                 return 0;
             }
             val /= e;
-        } else if (op == LexType::MOD) {
+        } else if (op == BinaryOp::Mod) {
             if (e == 0) {
                 return 0;
             }
@@ -71,7 +109,7 @@ std::unique_ptr<AddExp> AddExp::parse() {
     output(AST::AddExp);
 
     while (Lexer::curLexType == LexType::PLUS || Lexer::curLexType == LexType::MINU) {
-        n->ops.push_back(Lexer::curLexType);
+        n->ops.push_back(binaryOpFromLexType(Lexer::curLexType));
         Lexer::next();
         n->elements.push_back(MulExp::parse());
         output(AST::AddExp);
@@ -91,9 +129,9 @@ int AddExp::evaluate() const {
         if (Exp::getNonConstValueInEvaluate) {
             return 0;
         }
-        if (op == LexType::PLUS) {
+        if (op == BinaryOp::Add) {
             val += e;
-        } else if (op == LexType::MINU) {
+        } else if (op == BinaryOp::Sub) {
             val -= e;
         }
     }
@@ -107,7 +145,7 @@ std::unique_ptr<RelExp> RelExp::parse() {
     output(AST::RelExp);
 
     while (Lexer::curLexType == LexType::LSS || Lexer::curLexType == LexType::GRE || Lexer::curLexType == LexType::LEQ || Lexer::curLexType == LexType::GEQ) {
-        n->ops.push_back(Lexer::curLexType);
+        n->ops.push_back(binaryOpFromLexType(Lexer::curLexType));
         Lexer::next();
         n->elements.push_back(AddExp::parse());
         output(AST::RelExp);
@@ -123,7 +161,7 @@ std::unique_ptr<EqExp> EqExp::parse() {
     output(AST::EqExp);
 
     while (Lexer::curLexType == LexType::EQL || Lexer::curLexType == LexType::NEQ) {
-        n->ops.push_back(Lexer::curLexType);
+        n->ops.push_back(binaryOpFromLexType(Lexer::curLexType));
         Lexer::next();
         n->elements.push_back(RelExp::parse());
         output(AST::EqExp);
@@ -159,7 +197,7 @@ std::unique_ptr<LAndExp> LAndExp::parse() {
     output(AST::LAndExp);
 
     while (Lexer::curLexType == LexType::AND) {
-        n->ops.push_back(Lexer::curLexType);
+        n->ops.push_back(binaryOpFromLexType(Lexer::curLexType));
         Lexer::next();
         n->elements.push_back(EqExp::parse());
         output(AST::LAndExp);
@@ -193,7 +231,7 @@ std::unique_ptr<LOrExp> LOrExp::parse() {
     output(AST::LOrExp);
 
     while (Lexer::curLexType == LexType::OR) {
-        n->ops.push_back(Lexer::curLexType);
+        n->ops.push_back(binaryOpFromLexType(Lexer::curLexType));
         Lexer::next();
         n->elements.push_back(LAndExp::parse());
         output(AST::LOrExp);

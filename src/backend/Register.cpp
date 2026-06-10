@@ -139,7 +139,7 @@ void MIPS::clearRegs() {
     freeTempRegs = cleanRegQueue<MAX_TEMP_REGS>(true);
 
     varToRegs.clear();
-    freeVarRegs = cleanRegQueue<MAX_TEMP_REGS>(false);
+    freeVarRegs = cleanRegQueue<MAX_VAR_REGS>(false);
 }
 
 void MIPS::checkTempReg(const IR::Temp *temp, Register reg) {
