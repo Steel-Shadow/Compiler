@@ -1,5 +1,40 @@
 # BUAA 编译器设计文档
 
+- [BUAA 编译器设计文档](#buaa-编译器设计文档)
+  - [1. 项目概述](#1-项目概述)
+  - [2. 目录结构](#2-目录结构)
+  - [3. 总体架构](#3-总体架构)
+  - [4. 前端设计](#4-前端设计)
+    - [4.1 词法分析](#41-词法分析)
+    - [4.2 语法分析与 AST](#42-语法分析与-ast)
+    - [4.3 符号表与作用域](#43-符号表与作用域)
+    - [4.4 语义检查](#44-语义检查)
+  - [5. 中间表示设计](#5-中间表示设计)
+  - [6. IR 生成](#6-ir-生成)
+    - [6.1 全局对象和局部对象](#61-全局对象和局部对象)
+    - [6.2 表达式](#62-表达式)
+    - [6.3 控制流](#63-控制流)
+    - [6.4 数组和指针](#64-数组和指针)
+  - [7. IR 优化](#7-ir-优化)
+    - [7.1 Mem2Reg](#71-mem2reg)
+    - [7.2 常量折叠与常量传播](#72-常量折叠与常量传播)
+  - [8. MIPS 后端设计](#8-mips-后端设计)
+    - [8.1 栈帧布局](#81-栈帧布局)
+    - [8.2 指令翻译](#82-指令翻译)
+    - [8.3 Phi 消除](#83-phi-消除)
+    - [8.4 后端局部优化](#84-后端局部优化)
+  - [9. 测试设计](#9-测试设计)
+  - [10. 构建与运行](#10-构建与运行)
+  - [11. 设计取舍](#11-设计取舍)
+    - [11.1 递归下降前端](#111-递归下降前端)
+    - [11.2 图着色 MIPS 后端](#112-图着色-mips-后端)
+    - [11.3 标量优先的优化策略](#113-标量优先的优化策略)
+  - [12. 后续优化方向](#12-后续优化方向)
+    - [12.1 IR 正确性与 SSA](#121-ir-正确性与-ssa)
+    - [12.2 IR 优化](#122-ir-优化)
+    - [12.3 MIPS 后端](#123-mips-后端)
+    - [12.4 工程与测试](#124-工程与测试)
+
 ## 1. 项目概述
 
 本项目实现了一个面向 SysY/BUAA 编译实验语言的编译器。编译器读取源程序，完成词法分析、语法分析、语义检查、AST 构建、中间代码生成、标量 mem2reg 优化，并最终输出可由 Mars 运行的 MIPS 汇编。
@@ -13,6 +48,7 @@ source
   -> Semantic Check + Symbol Table
   -> IRGenerator
   -> Scalar Mem2Reg
+  -> Constant Folding + Constant Propagation
   -> MIPS Backend
   -> Mars
 ```
@@ -57,7 +93,8 @@ test/
 3. 如果 `Error::hasError` 为真，停止后续阶段。
 4. `IR::generateModule` 从 AST 生成模块级 IR。
 5. `IR::runScalarMem2Reg` 对可提升的局部标量变量做 SSA 化。
-6. `MIPS::generate` 将 IR 翻译为 MIPS 汇编。
+6. `IR::runConstantPropagation` 进行常量折叠、常量传播和无副作用指令删除。
+7. `MIPS::generate` 将 IR 翻译为 MIPS 汇编。
 
 各阶段之间的数据边界比较清晰：前端输出 AST 和符号表，中端使用 AST 与符号表生成 IR，后端只依赖 IR 模块，不直接访问 AST。
 
@@ -191,7 +228,9 @@ Exp -> AddExp -> MulExp -> UnaryExp -> PrimaryExp/LVal/Call/Cast
 
 线性下标根据维度展开，最终由 `getelementptr` 生成元素地址。数组作为函数参数传递时，传递的是首元素地址或指定子数组地址。
 
-## 7. Mem2Reg 优化
+## 7. IR 优化
+
+### 7.1 Mem2Reg
 
 `src/IR/Passes.cpp` 实现了标量 mem2reg。该 pass 只提升满足条件的局部标量 `alloca`：
 
@@ -209,6 +248,16 @@ Exp -> AddExp -> MulExp -> UnaryExp -> PrimaryExp/LVal/Call/Cast
 6. 删除 trivial phi，并将其使用点替换为唯一真实值。
 
 trivial phi 删除对递归和复杂控制流样例很关键。它可以避免后端生成大量无意义的 phi 边复制，降低 MIPS 运行时间，并避免某些控制流边上出现退化的跳转链。
+
+### 7.2 常量折叠与常量传播
+
+mem2reg 之后，`runConstantPropagation` 会在 SSA 临时值上做保守的常量优化：
+
+- 折叠常量 `binary`、`icmp`、`cast` 和可化简的 `phi`。
+- 将已知常量传播到后续使用点。
+- 删除已经被常量或已有 SSA 值替换的无副作用指令。
+
+该 pass 不删除 `load/store/call`，也不改写 CFG，因此不会改变内存副作用和函数调用顺序。
 
 ## 8. MIPS 后端设计
 
@@ -306,7 +355,7 @@ pred -> target:
 
 测试脚本位于 `test/run_testcase_2026.py`。它可以发现 testcase-2026 的 generated 用例，并自动执行：
 
-1. 调用编译器生成 `lexer/error/IR/mips`。
+1. 调用编译器生成 `lexer/error/ir/mips`。
 2. 对错误样例比对 `error.txt`。
 3. 对正确样例调用 Mars 运行 MIPS，并比对 `ans.txt`。
 
@@ -370,15 +419,36 @@ java -jar test/vendor/Mars-2024.jar nc mips.txt < in.txt
 
 ### 11.3 标量优先的优化策略
 
-mem2reg 只处理非逃逸标量，不处理数组和指针对象。这样实现复杂度低，风险可控，也适合当前 MIPS 后端；后续可以在 IR 稳定后继续加入常量传播、死代码删除和循环优化。
+mem2reg 只处理非逃逸标量，不处理数组和指针对象；常量传播只处理无副作用的 SSA 临时值，不跨内存对象推断。这样实现复杂度低，风险可控，也适合当前 MIPS 后端；后续可以在 IR 稳定后继续加入死代码删除和循环优化。
 
 ## 12. 后续优化方向
 
 可以继续推进的方向包括：
 
+### 12.1 IR 正确性与 SSA
+
 - 增加 IR 级 CFG 验证器，检查基本块终结指令、phi incoming 和前驱关系是否一致。
-- 实现常量传播、死代码删除和简单公共子表达式消除。
-- 继续减少固定 scratch 寄存器依赖，让更多 `$t` 寄存器可以进入图着色分配。
-- 优化 spill 选择策略，降低高频循环中的内存访问。
-- 将 AST 的 parse、semantic check、IR generation 进一步解耦。
-- 为关键 bug 样例建立固定 regression 子集，避免后续重构破坏短路、phi、数组形参和递归调用。
+- 将当前轻量 mem2reg 升级为基于支配树和 dominance frontier 的标准 SSA 构造，提高复杂 CFG、循环回边和不可达块场景下的稳健性。
+- 增加 IR dump 前后的 pass 对比选项，便于定位 mem2reg、phi 简化和常量传播引入的问题。
+
+### 12.2 IR 优化
+
+- 实现死代码删除，移除无副作用且结果无人使用的 `binary/icmp/cast/getelementptr/phi` 等指令。
+- 实现简单公共子表达式消除，复用同一基本块或支配路径上的重复计算。
+- 将当前常量传播升级为稀疏条件常量传播，在常量条件分支上剪掉不可达边，并进一步化简 phi。
+- 增加 algebraic simplification，例如 `x - x -> 0`、`x / 1 -> x`、`x % 1 -> 0`、连续 cast 合并等。
+
+### 12.3 MIPS 后端
+
+- 继续减少固定 scratch 寄存器依赖，让 `$t8/$t9` 等更多 caller-saved 寄存器可以进入图着色分配。
+- 优化 spill 选择策略，结合 use count、循环深度和调用点存活情况，降低高频循环中的内存访问。
+- 改进指令选择，优先使用 `addiu`、`andi` 等立即数指令，减少常量 materialize 和寄存器间 `move`。
+- 针对函数调用前后的 caller-saved 寄存器做更细粒度保存，而不是只依赖 call-live 限制分配。
+- 继续完善 phi copy 消除，尽量把边复制合并到前驱块尾部已有指令序列中。
+
+### 12.4 工程与测试
+
+- 将 AST 的 parse、semantic check、IR generation 进一步解耦，减少 AST 节点承担的职责。
+- 为关键 bug 样例建立固定 regression 子集，覆盖短路、phi、数组形参、递归调用、switch 和字符类型。
+- 为优化效果维护固定 benchmark 表，记录每次优化前后的 `Final Cycle Sum`、关键样例 cycle 和失败样例。
+- 增加单测脚本的输入/输出样例模板，使手写 SysY 程序、输入文件和期望输出更容易复用。

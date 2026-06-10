@@ -1,6 +1,9 @@
 #include "IR/Passes.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <limits>
 #include <map>
 #include <set>
 #include <unordered_map>
@@ -325,11 +328,355 @@ private:
     inline static const std::vector<std::string> emptyPreds_{};
 };
 
+class ConstantPropagation {
+public:
+    void run(Function &function) {
+        function_ = &function;
+        bool changed;
+        do {
+            changed = false;
+            rewriteAllOperands();
+            for (auto &blockPtr: function_->blocks) {
+                for (auto &inst: blockPtr->instructions) {
+                    replaceOperands(inst);
+                    Operand replacement;
+                    if (tryFold(inst, replacement) && recordReplacement(inst.result, std::move(replacement))) {
+                        changed = true;
+                    }
+                }
+            }
+        } while (changed);
+        rewriteAllOperands();
+        removeReplacedInstructions();
+    }
+
+private:
+    Function *function_{nullptr};
+    std::unordered_map<std::string, Operand> replacements_;
+
+    bool tryFold(const Instruction &inst, Operand &replacement) {
+        if (inst.result.empty()) {
+            return false;
+        }
+        switch (inst.opcode) {
+            case Opcode::Binary:
+                return foldBinary(inst, replacement);
+            case Opcode::ICmp:
+                return foldICmp(inst, replacement);
+            case Opcode::Cast:
+                return foldCast(inst, replacement);
+            case Opcode::Phi:
+                return foldPhi(inst, replacement);
+            default:
+                return false;
+        }
+    }
+
+    bool foldBinary(const Instruction &inst, Operand &replacement) {
+        if (inst.operands.size() < 2) {
+            return false;
+        }
+        Operand lhs = resolve(inst.operands[0]);
+        Operand rhs = resolve(inst.operands[1]);
+        int lhsValue = 0;
+        int rhsValue = 0;
+        bool lhsConst = parseInteger(lhs, lhsValue);
+        bool rhsConst = parseInteger(rhs, rhsValue);
+        if (lhsConst && rhsConst) {
+            int result = 0;
+            if (!evalBinary(inst.op, lhsValue, rhsValue, result)) {
+                return false;
+            }
+            replacement = Operand(inst.type, std::to_string(maskForType(inst.type, result)));
+            return true;
+        }
+
+        if (inst.op == "add") {
+            if (rhsConst && rhsValue == 0) {
+                replacement = lhs;
+                return true;
+            }
+            if (lhsConst && lhsValue == 0) {
+                replacement = rhs;
+                return true;
+            }
+        } else if (inst.op == "sub") {
+            if (rhsConst && rhsValue == 0) {
+                replacement = lhs;
+                return true;
+            }
+        } else if (inst.op == "mul") {
+            if ((lhsConst && lhsValue == 0) || (rhsConst && rhsValue == 0)) {
+                replacement = Operand(inst.type, "0");
+                return true;
+            }
+            if (rhsConst && rhsValue == 1) {
+                replacement = lhs;
+                return true;
+            }
+            if (lhsConst && lhsValue == 1) {
+                replacement = rhs;
+                return true;
+            }
+        } else if (inst.op == "sdiv") {
+            if (rhsConst && rhsValue == 1) {
+                replacement = lhs;
+                return true;
+            }
+            if (lhsConst && lhsValue == 0 && (!rhsConst || rhsValue != 0)) {
+                replacement = Operand(inst.type, "0");
+                return true;
+            }
+        } else if (inst.op == "srem") {
+            if (rhsConst && rhsValue == 1) {
+                replacement = Operand(inst.type, "0");
+                return true;
+            }
+            if (lhsConst && lhsValue == 0 && (!rhsConst || rhsValue != 0)) {
+                replacement = Operand(inst.type, "0");
+                return true;
+            }
+        } else if (inst.op == "and") {
+            if ((lhsConst && lhsValue == 0) || (rhsConst && rhsValue == 0)) {
+                replacement = Operand(inst.type, "0");
+                return true;
+            }
+        } else if (inst.op == "or") {
+            if (rhsConst && rhsValue == 0) {
+                replacement = lhs;
+                return true;
+            }
+            if (lhsConst && lhsValue == 0) {
+                replacement = rhs;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool foldICmp(const Instruction &inst, Operand &replacement) {
+        if (inst.operands.size() < 2) {
+            return false;
+        }
+        Operand lhs = resolve(inst.operands[0]);
+        Operand rhs = resolve(inst.operands[1]);
+        int lhsValue = 0;
+        int rhsValue = 0;
+        if (parseInteger(lhs, lhsValue) && parseInteger(rhs, rhsValue)) {
+            bool result = false;
+            if (!evalICmp(inst.op, lhsValue, rhsValue, result)) {
+                return false;
+            }
+            replacement = Operand(inst.type, result ? "1" : "0");
+            return true;
+        }
+        if (sameOperand(lhs, rhs)) {
+            if (inst.op == "eq" || inst.op == "sle" || inst.op == "sge") {
+                replacement = Operand(inst.type, "1");
+                return true;
+            }
+            if (inst.op == "ne" || inst.op == "slt" || inst.op == "sgt") {
+                replacement = Operand(inst.type, "0");
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool foldCast(const Instruction &inst, Operand &replacement) {
+        if (inst.operands.empty()) {
+            return false;
+        }
+        Operand source = resolve(inst.operands.front());
+        int value = 0;
+        if (!parseInteger(source, value)) {
+            if (source.type == inst.type) {
+                replacement = source;
+                return true;
+            }
+            return false;
+        }
+        if (inst.op == "trunc") {
+            replacement = Operand(inst.type, std::to_string(maskForType(inst.type, value)));
+            return true;
+        }
+        if (inst.op == "zext") {
+            replacement = Operand(inst.type, std::to_string(maskForType(source.type, value)));
+            return true;
+        }
+        return false;
+    }
+
+    bool foldPhi(const Instruction &inst, Operand &replacement) {
+        bool hasValue = false;
+        for (const auto &incoming: inst.incoming) {
+            Operand value = resolve(incoming.value);
+            if (value.text == inst.result) {
+                continue;
+            }
+            if (!hasValue) {
+                replacement = std::move(value);
+                hasValue = true;
+            } else if (!sameOperand(replacement, value)) {
+                return false;
+            }
+        }
+        return hasValue;
+    }
+
+    bool recordReplacement(const std::string &result, Operand replacement) {
+        if (replacement.type == "label" || replacement.text.empty() || replacement.text == result) {
+            return false;
+        }
+        replacement = resolve(std::move(replacement));
+        if (replacement.text == result) {
+            return false;
+        }
+        auto it = replacements_.find(result);
+        if (it != replacements_.end() && sameOperand(it->second, replacement)) {
+            return false;
+        }
+        replacements_[result] = std::move(replacement);
+        return true;
+    }
+
+    Operand resolve(Operand operand) const {
+        if (operand.type == "label") {
+            return operand;
+        }
+        std::set<std::string> seen;
+        while (!operand.text.empty() && replacements_.find(operand.text) != replacements_.end() && seen.insert(operand.text).second) {
+            operand = replacements_.at(operand.text);
+        }
+        return operand;
+    }
+
+    void replaceOperands(Instruction &inst) const {
+        for (auto &operand: inst.operands) {
+            operand = resolve(std::move(operand));
+        }
+        for (auto &incoming: inst.incoming) {
+            incoming.value = resolve(std::move(incoming.value));
+        }
+    }
+
+    void rewriteAllOperands() {
+        for (auto &blockPtr: function_->blocks) {
+            for (auto &inst: blockPtr->instructions) {
+                replaceOperands(inst);
+            }
+        }
+    }
+
+    void removeReplacedInstructions() {
+        for (auto &blockPtr: function_->blocks) {
+            auto &instructions = blockPtr->instructions;
+            instructions.erase(std::remove_if(instructions.begin(), instructions.end(), [this](const Instruction &inst) {
+                return isRemovable(inst) && replacements_.find(inst.result) != replacements_.end();
+            }), instructions.end());
+        }
+    }
+
+    static bool isRemovable(const Instruction &inst) {
+        return inst.opcode == Opcode::Binary || inst.opcode == Opcode::ICmp ||
+               inst.opcode == Opcode::Cast || inst.opcode == Opcode::Phi;
+    }
+
+    static bool parseInteger(const Operand &operand, int &value) {
+        if (operand.text.empty() || operand.text.front() == '%' || operand.text.front() == '@') {
+            return false;
+        }
+        size_t pos = operand.text[0] == '-' ? 1 : 0;
+        if (pos == operand.text.size()) {
+            return false;
+        }
+        for (; pos < operand.text.size(); ++pos) {
+            if (!std::isdigit(static_cast<unsigned char>(operand.text[pos]))) {
+                return false;
+            }
+        }
+        try {
+            value = std::stoi(operand.text);
+            return true;
+        } catch (const std::exception &) {
+            return false;
+        }
+    }
+
+    static bool evalBinary(const std::string &op, int lhs, int rhs, int &result) {
+        if (op == "add") {
+            result = wrapI32(static_cast<long long>(lhs) + rhs);
+        } else if (op == "sub") {
+            result = wrapI32(static_cast<long long>(lhs) - rhs);
+        } else if (op == "mul") {
+            result = wrapI32(static_cast<long long>(lhs) * rhs);
+        } else if (op == "sdiv") {
+            if (rhs == 0 || (lhs == std::numeric_limits<int>::min() && rhs == -1)) {
+                return false;
+            }
+            result = lhs / rhs;
+        } else if (op == "srem") {
+            if (rhs == 0 || (lhs == std::numeric_limits<int>::min() && rhs == -1)) {
+                return false;
+            }
+            result = lhs % rhs;
+        } else if (op == "and") {
+            result = lhs & rhs;
+        } else if (op == "or") {
+            result = lhs | rhs;
+        } else {
+            return false;
+        }
+        return true;
+    }
+
+    static bool evalICmp(const std::string &op, int lhs, int rhs, bool &result) {
+        if (op == "slt") {
+            result = lhs < rhs;
+        } else if (op == "sgt") {
+            result = lhs > rhs;
+        } else if (op == "sle") {
+            result = lhs <= rhs;
+        } else if (op == "sge") {
+            result = lhs >= rhs;
+        } else if (op == "eq") {
+            result = lhs == rhs;
+        } else if (op == "ne") {
+            result = lhs != rhs;
+        } else {
+            return false;
+        }
+        return true;
+    }
+
+    static int maskForType(const std::string &type, int value) {
+        if (type == "i8") {
+            return value & 0xff;
+        }
+        if (type == "i1") {
+            return value & 1;
+        }
+        return value;
+    }
+
+    static int wrapI32(long long value) {
+        std::uint32_t wrapped = static_cast<std::uint32_t>(value);
+        long long signedValue = wrapped <= 0x7fffffffU ? wrapped : static_cast<long long>(wrapped) - 0x100000000LL;
+        return static_cast<int>(signedValue);
+    }
+};
+
 } // namespace
 
 void runScalarMem2Reg(Module &module) {
     for (auto &function: module.functions) {
         Mem2Reg().run(*function);
+    }
+}
+
+void runConstantPropagation(Module &module) {
+    for (auto &function: module.functions) {
+        ConstantPropagation().run(*function);
     }
 }
 

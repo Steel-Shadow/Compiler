@@ -37,6 +37,7 @@ void compile(const std::string &inFile,
     if (!Error::hasError) {
         IR::Module module = IR::generateModule(*compUnit);
         IR::runScalarMem2Reg(module);
+        IR::runConstantPropagation(module);
         writeTextFile(IRFile, module.toString());
         writeTextFile(mipsFile, MIPS::generate(module));
     }

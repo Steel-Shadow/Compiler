@@ -5,7 +5,7 @@
 namespace MIPS {
 
 void Generator::emitModule(const IR::Module &module, std::ostream &out) {
-    out << "# MIPS generated from toy LLVM-like IR\n";
+    out << "# MIPS designed by Steel Shadow\n";
     out << ".data\n";
     for (const auto &global: module.globals) {
         out << global.name << ": ";
