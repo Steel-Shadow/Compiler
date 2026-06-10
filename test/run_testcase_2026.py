@@ -13,7 +13,7 @@ DEFAULT_REPO_URL = "git@github.com:compile-technology-buaa/testcase-2026.git"
 DEFAULT_REPO = ROOT / "test" / "vendor" / "testcase-2026"
 DEFAULT_WORK = ROOT / "test" / "work" / "testcase-2026"
 DEFAULT_COMPILER = ROOT / "build" / "src" / "Compiler"
-
+DEFAULT_MARS_JAR = ROOT / "test" / "vendor" / "Mars-2024.jar"
 
 def default_jobs():
     return min(max((os.cpu_count() or 2) // 2, 1), 8)
@@ -300,13 +300,13 @@ def main():
     parser.add_argument(
         "--suite",
         choices=["all", "2026", "regression", "correct", "errors"],
-        default="2026",
+        default="all",
     )
     parser.add_argument("--filter", help="only run cases whose generated path contains this text")
     parser.add_argument("--limit", type=int, help="limit number of correct and error cases separately")
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--mars-timeout", type=float, default=15.0)
-    parser.add_argument("--mars-jar", type=Path)
+    parser.add_argument("--mars-jar", type=Path, default=DEFAULT_MARS_JAR)
     parser.add_argument(
         "-j",
         "--jobs",

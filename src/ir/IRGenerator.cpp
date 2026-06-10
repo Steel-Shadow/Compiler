@@ -347,8 +347,7 @@ private:
         } else if (auto *print = dynamic_cast<const PrintStmt *>(&stmt)) {
             genPrint(*print);
         } else if (auto *switchStmt = dynamic_cast<const SwitchStmt *>(&stmt)) {
-            builder_.emitComment("switch lowering pending");
-            (void) genExp(*switchStmt->exp);
+            genSwitch(*switchStmt);
         }
     }
 
@@ -429,6 +428,50 @@ private:
 
         builder_.setInsertPoint(endBlock);
         SymTab::leaveRecordedScope();
+    }
+
+    void genSwitch(const SwitchStmt &stmt) {
+        Operand switchValue = asInt(genExp(*stmt.exp));
+        std::vector<BasicBlock *> caseBlocks;
+        caseBlocks.reserve(stmt.cases.size());
+        BasicBlock *defaultBlock = nullptr;
+        for (size_t i = 0; i < stmt.cases.size(); ++i) {
+            auto &block = builder_.createBlock(stmt.cases[i]->isDefault ? "switch.default" : "switch.case");
+            if (stmt.cases[i]->isDefault) {
+                defaultBlock = &block;
+            }
+            caseBlocks.push_back(&block);
+        }
+        auto &endBlock = builder_.createBlock("switch.end");
+
+        for (size_t i = 0; i < stmt.cases.size(); ++i) {
+            if (stmt.cases[i]->isDefault) {
+                continue;
+            }
+            Operand caseValue = Operand::constant(stmt.cases[i]->number->getType(), stmt.cases[i]->number->evaluate());
+            Operand matched = builder_.emitICmp("eq", switchValue, asInt(std::move(caseValue)), "switchcmp");
+            auto &nextCheck = builder_.createBlock("switch.next");
+            builder_.emitCondBr(std::move(matched), caseBlocks[i]->name, nextCheck.name);
+            builder_.setInsertPoint(nextCheck);
+        }
+        builder_.emitBr(defaultBlock ? defaultBlock->name : endBlock.name);
+
+        breakTargets_.push(endBlock.name);
+        for (size_t i = 0; i < stmt.cases.size(); ++i) {
+            builder_.setInsertPoint(*caseBlocks[i]);
+            for (const auto &caseStmt: stmt.cases[i]->stmts) {
+                genStmt(*caseStmt);
+            }
+            if (!builder_.block()->terminated()) {
+                if (i + 1 < caseBlocks.size()) {
+                    builder_.emitBr(caseBlocks[i + 1]->name);
+                } else {
+                    builder_.emitBr(endBlock.name);
+                }
+            }
+        }
+        breakTargets_.pop();
+        builder_.setInsertPoint(endBlock);
     }
 
     void genPrint(const PrintStmt &stmt) {
