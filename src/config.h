@@ -8,6 +8,7 @@
 #define FILEOUT_ERROR
 // #define FILEOUT_LEXER
 // #define FILEOUT_PARSER
+#define FILEOUT_IR
 #define FILEOUT_MIPS
 
 
@@ -16,7 +17,6 @@
 // #define STDOUT_PARSER
 #define STDOUT_ERROR
 // #define STDOUT_IR
-#define FILEOUT_IR
 // #define STDOUT_MIPS
 #endif
 

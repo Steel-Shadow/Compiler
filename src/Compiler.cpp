@@ -31,6 +31,7 @@ bool compile(const CompileOptions &options) {
     auto compUnit = CompUnit::parse();
     if (!Error::hasError) {
         auto module = compUnit->genIR();
+        module->optimize();
         module->outputIR();
         MIPS::genMIPS(*module);
     }

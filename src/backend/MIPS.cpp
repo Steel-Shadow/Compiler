@@ -54,41 +54,63 @@ std::string Label::toString() {
     return nameAndId + ":";
 }
 
-void MIPS::genMIPS(const IR::Module &module) {
-    reset();
+namespace {
+class CodeGenerator {
+    const IR::Module &module;
 
-    /*---- .data generate & output ----------------------*/
-    output("#### MIPS ####");
-    output(".data");
-    for (auto &[name, globVar]: module.getGlobVars()) {
-        std::string dataLine = name + (globVar.type == Type::Char ? ": .byte " : ": .word ");
-        for (size_t i = 0; i < globVar.initVal.size(); ++i) {
-            if (i != 0) {
-                dataLine += ", ";
+public:
+    explicit CodeGenerator(const IR::Module &module) :
+        module(module) {}
+
+    void run() {
+        MIPS::reset();
+        emitDataSegment();
+        emitTextSegment();
+        optimizeText();
+        outputText();
+    }
+
+private:
+    void emitDataSegment() const {
+        MIPS::output("#### MIPS ####");
+        MIPS::output(".data");
+        for (auto &[name, globVar]: module.getGlobVars()) {
+            std::string dataLine = name + (globVar.type == Type::Char ? ": .byte " : ": .word ");
+            for (size_t i = 0; i < globVar.initVal.size(); ++i) {
+                if (i != 0) {
+                    dataLine += ", ";
+                }
+                dataLine += std::to_string(globVar.initVal[i]);
             }
-            dataLine += std::to_string(globVar.initVal[i]);
+            MIPS::output(dataLine);
         }
-        output(dataLine);
-    }
-    int i = 0;
-    for (const auto &str: IR::Str::MIPS_strings) {
-        output("str_" + std::to_string(i) + ": .asciiz " + str);
-        i++;
-    }
-
-    /*----- .text generate ---------------------*/
-    output("");
-    output(".text");
-    // main
-    for (auto &basicBlock: module.getMainFunction().getBasicBlocks()) {
-        assemblies.push_back(std::make_unique<Label>(basicBlock->label.nameAndId));
-        for (auto &inst: basicBlock->instructions) {
-            irToMips(inst);
+        int i = 0;
+        for (const auto &str: IR::Str::MIPS_strings) {
+            MIPS::output("str_" + std::to_string(i) + ": .asciiz " + str);
+            i++;
         }
     }
 
-    // other function
-    for (auto &func: module.getFunctions()) {
+    void emitTextSegment() {
+        MIPS::output("");
+        MIPS::output(".text");
+        emitFunction(module.getMainFunction(), true);
+        for (auto &func: module.getFunctions()) {
+            prepareUserFunction(*func);
+            emitFunction(*func, false);
+        }
+    }
+
+    static void emitFunction(const IR::Function &function, bool) {
+        for (auto &basicBlock: function.getBasicBlocks()) {
+            assemblies.push_back(std::make_unique<Label>(basicBlock->label.nameAndId));
+            for (auto &inst: basicBlock->instructions) {
+                MIPS::irToMips(inst);
+            }
+        }
+    }
+
+    static void prepareUserFunction(const IR::Function &func) {
         clearRegs();
         // Use part of tempRegs, but move stackOffset for MAX_TEMP_REGS.
         StackMemory::curOffset = wordSize * (2 + MAX_TEMP_REGS + MAX_VAR_REGS);
@@ -97,30 +119,30 @@ void MIPS::genMIPS(const IR::Module &module) {
         // set function's parameters to varToOffset
         // stack memory map explain is in markdown and Memory.h
         int offset = 0;
-        for (const auto &param: func->getParams()) {
+        for (const auto &param: func.getParams()) {
             StackMemory::varToOffset.emplace(IR::Var(param.name, 1, false, param.dims, param.type, !param.dims.empty()), -offset);
             offset += wordSize;
         }
+    }
 
-        for (auto &basicBlock: func->getBasicBlocks()) {
-            assemblies.push_back(std::make_unique<Label>(basicBlock->label.nameAndId));
-            for (auto &inst: basicBlock->instructions) {
-                irToMips(inst);
-            }
+    static void optimizeText() {
+        while (allMergeR_Move()) {}
+        while (allMergeMove_R_rs()) {}
+        while (allMergeLi_Move()) {}
+        while (allMergeMove_R_rt()) {}
+        while (allMergeLi_R()) {}
+    }
+
+    static void outputText() {
+        for (auto &assem: assemblies) {
+            MIPS::output(assem->toString());
         }
     }
+};
+} // namespace
 
-    /*----- .text optimize ---------------------*/
-    while (allMergeR_Move()) {}
-    while (allMergeMove_R_rs()) {}
-    while (allMergeLi_Move()) {}
-    while (allMergeMove_R_rt()) {}
-    while (allMergeLi_R()) {}
-
-    /*----- .text output  ---------------------*/
-    for (auto &assem: assemblies) {
-        output(assem->toString());
-    }
+void MIPS::genMIPS(const IR::Module &module) {
+    CodeGenerator(module).run();
 }
 
 Op rOp_ImmOp(Op rOp) {

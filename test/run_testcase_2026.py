@@ -16,10 +16,6 @@ DEFAULT_COMPILER = ROOT / "build" / "src" / "Compiler"
 MARS_JAR_PATTERNS = ("Mars*.jar", "mars*.jar", "*Mars*.jar", "*mars*.jar")
 
 
-def default_jobs():
-    return min(max((os.cpu_count() - 1 or 1), 1), 8)
-
-
 def find_default_mars_jar():
     candidates = []
     for directory in (SCRIPT_DIR, SCRIPT_DIR / "vendor"):
@@ -351,7 +347,7 @@ def main():
         "-j",
         "--jobs",
         type=int,
-        default=default_jobs(),
+        default=max(os.cpu_count() - 1, 1),
         help="number of test cases to run in parallel",
     )
     args = parser.parse_args()

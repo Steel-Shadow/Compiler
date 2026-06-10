@@ -206,7 +206,7 @@ put_str(char[]) -> void
 
 ## 中间代码 IR
 
-IR 结构参考 LLVM 的层次设计，但保持为适合课程实现的四元式：
+IR 结构参考 LLVM 的核心对象模型：前端生成 `Module -> Function -> BasicBlock -> Instruction`，值统一抽象为 `Element(Value)`，指令实现 `User` 并显式暴露操作数角色。项目不依赖 LLVM 头文件或库，但保留 LLVM 的几个关键设计点：typed value、stable value identity、user operands、use-def chain、replace-all-uses-with，以及按函数运行的 pass pipeline。
 
 ```text
 Module
@@ -216,7 +216,7 @@ Module
       Inst
 ```
 
-四元式指令结构：
+为了不重写前端 AST，`Inst(op, res, arg1, arg2)` 仍作为兼容构造层保留；进入 IR 后会被解释成带角色的 operands：
 
 ```cpp
 struct Inst {
@@ -227,6 +227,13 @@ struct Inst {
 };
 ```
 
+其中 `res/arg1/arg2` 不再只是四元式字段。`Inst::operands()` 会按 opcode 标记每个槽位的语义，例如：
+
+- `Load`：`res` 是 `Definition`，`arg1` 是 `Address`，`arg2` 是 `Offset`。
+- `Store`：`res` 是被写入的 `Value`，`arg1` 是 `Address`，`arg2` 是 `Offset`。
+- `Br` / `Bif1` / `Bif0`：label 操作数是 `Target`，条件值是 `Value`。
+- `Call`：函数 label 是 `Callee`。
+
 `Element` 的主要派生类：
 
 - `Var`：变量或数组对象，包含名称、作用域深度、维度、类型和符号类别。
@@ -234,6 +241,8 @@ struct Inst {
 - `ConstVal`：立即数。
 - `Label`：基本块或函数标签。
 - `Str`：字符串常量。
+
+每个 `Element` 都有 `valueKey()`，用于跨 clone 的稳定值身份；`Function::buildUseDefChains()` 会扫描所有 `User` operands，构建 `ValueRecord{definition, uses}`。当前死代码删除已经使用这条 use-def chain，而不是手写扫描固定字段。`Function::replaceAllUsesWith()` 也提供了 LLVM 风格的 RAUW 基础接口，后续可以支撑更完整的 SSA 优化。
 
 主要 IR 指令包括：
 
@@ -244,6 +253,8 @@ struct Inst {
 - 调用：`Call`、`PushParam`、`PushAddressParam`、`Ret`、`RetMain`。
 - I/O：`GetInt`、`GetChar`、`GetString`、`PrintInt`、`PrintChar`、`PrintStr`。
 - 栈作用域：`InStack`、`OutStack`。
+
+IR 在进入 MIPS 后端前会运行 `Module::optimize()`。优化管线使用一个轻量 `PassManager`，按函数迭代执行常量折叠、代数化简、基本块内标量内存常量传播、基于 use-def 的死代码删除、死存储删除、终结符后代码清理和不可达基本块删除。优化后的 IR 再输出到 `ir.txt`，MIPS 后端也消费同一份优化后模块。
 
 ### 作用域栈
 
@@ -278,7 +289,9 @@ MIPS 后端位于 `src/backend`，主要组件：
 - `Instruction.*`：IR 到 MIPS 指令翻译。
 - `Register.*`：临时寄存器和变量寄存器分配。
 - `Memory.*`：栈偏移映射。
-- `MIPS.*`：模块级汇编输出和简单 peephole 优化。
+- `MIPS.*`：`CodeGenerator` 模块级汇编输出和简单 peephole 优化。
+
+后端入口是 `MIPS::genMIPS(const IR::Module&)`，即从优化后的 LLVM-like IR 模块生成 `.data` / `.text`。后端仍保留面向课程 MIPS 的栈帧、寄存器池和 peephole pass；中端优化负责先收缩 IR，后端 peephole 再合并相邻 `li`、`move` 和立即数算术。
 
 ### 数据段
 
@@ -402,9 +415,14 @@ Failures:      0
 
 ## 优化与取舍
 
-当前优化以简单、局部、稳定为主：
+当前优化分为 IR pass 和 MIPS peephole 两层，整体以简单、局部、稳定为主：
 
 - 常量数组下标在 IR 生成阶段折叠。
+- IR 常量折叠：对 `LoadImd`、一元/二元算术、比较、`MulImd`、`Mult4` 进行常量求值。
+- IR 代数化简：处理 `x + 0`、`x * 1`、`x * 0`、`x / 1`、`x % 1` 等局部模式。
+- 基本块内标量内存常量传播：局部标量变量刚存入常量后，后续 `load` 可改写为 SSA 常量。
+- IR 死代码/死存储删除：通过 `Function::buildUseDefChains()` 删除未使用的纯临时值，并删除不被读取、不取地址的局部标量存储和空 `alloca`。
+- IR 控制流清理：常量条件分支折叠、终结符后不可达指令删除、不可达基本块删除。
 - `char` 值在需要时用 `andi 0xFF` 截断。
 - 乘 4 偏移使用 `sll`。
 - `li + addu/subu/and/or/slt` 可合并为立即数指令。
@@ -414,8 +432,7 @@ Failures:      0
 
 - 全局数据流分析。
 - 图着色寄存器分配。
-- 死代码消除。
 - 公共子表达式消除。
-- 基本块级控制流清理。
+- 完整 LLVM `mem2reg` / SSA phi 插入。
 
 本项目优先保证语义正确性和测试稳定性。尤其在函数调用、数组传参、错误恢复这些位置，采用了更保守但更可控的实现方式。

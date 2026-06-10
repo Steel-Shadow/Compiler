@@ -9,6 +9,8 @@
 
 #include <fstream>
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 // Intermediate Representation
@@ -105,10 +107,68 @@ enum class Op {
     Not,
 }; // @formatter:on
 
-// Var Temp ConstVal Str
+struct Element;
+struct Inst;
+
+enum class ValueKind {
+    Variable,
+    Temporary,
+    Constant,
+    String,
+    Label,
+};
+
+enum class OperandRole {
+    Definition,
+    Value,
+    Address,
+    Offset,
+    Size,
+    Target,
+    Callee,
+};
+
+struct OperandRef {
+    OperandRole role;
+    size_t slot;
+    const Element *value;
+};
+
+struct Use {
+    Inst *user;
+    size_t slot;
+    OperandRole role;
+};
+
+struct ValueRecord {
+    std::string key;
+    const Element *definition{};
+    std::vector<Use> uses;
+};
+
+// LLVM-style Value base. Var/Temp/ConstVal/Str/Label are concrete values.
 struct Element {
+protected:
+    ValueKind valueKind;
+    Type valueType;
+
+    Element(ValueKind valueKind, Type valueType);
+
+public:
     virtual ~Element() = default;
     virtual std::string toString() const = 0;
+    virtual std::unique_ptr<Element> clone() const = 0;
+    virtual std::string valueKey() const = 0;
+
+    ValueKind getKind() const;
+    Type getValueType() const;
+    bool isSameValue(const Element &other) const;
+};
+
+// LLVM-style User base. Instructions are Users because they reference operands.
+struct User {
+    virtual ~User() = default;
+    virtual std::vector<OperandRef> operands() const = 0;
 };
 
 struct Var : public Element {
@@ -129,6 +189,8 @@ struct Var : public Element {
     bool operator<(const Var &other) const;
 
     std::string toString() const override;
+    std::unique_ptr<Element> clone() const override;
+    std::string valueKey() const override;
 };
 
 // temp register
@@ -144,6 +206,8 @@ struct Temp : public Element {
     Temp(Temp const &other);
 
     std::string toString() const override;
+    std::unique_ptr<Element> clone() const override;
+    std::string valueKey() const override;
 };
 
 struct ConstVal : public Element {
@@ -153,6 +217,8 @@ struct ConstVal : public Element {
     ConstVal(int value, Type type);
 
     std::string toString() const override;
+    std::unique_ptr<Element> clone() const override;
+    std::string valueKey() const override;
 };
 
 // No need to save the address of the string,
@@ -166,9 +232,11 @@ struct Str : public Element {
     Str();
 
     std::string toString() const override;
+    std::unique_ptr<Element> clone() const override;
+    std::string valueKey() const override;
 };
 
-struct Inst {
+struct Inst : public User {
     Op op;
     std::unique_ptr<Element> res;
     std::unique_ptr<Element> arg1;
@@ -178,8 +246,25 @@ struct Inst {
          std::unique_ptr<Element> res,
          std::unique_ptr<Element> arg1,
          std::unique_ptr<Element> arg2);
+    Inst(Inst &&) noexcept = default;
+    Inst &operator=(Inst &&) noexcept = default;
+    Inst(const Inst &) = delete;
+    Inst &operator=(const Inst &) = delete;
 
     void outputIR() const;
+    std::string toString() const;
+    std::string toLLVMString() const;
+    std::vector<OperandRef> operands() const override;
+    std::unique_ptr<Element> &operandSlot(size_t slot);
+    const std::unique_ptr<Element> &operandSlot(size_t slot) const;
+    void setOperand(size_t slot, std::unique_ptr<Element> value);
+    bool definesTemp() const;
+    bool definesValue() const;
+    bool isScopeMarker() const;
+    bool isTerminator() const;
+    bool isUnconditionalTerminator() const;
+    bool mayHaveSideEffects() const;
+    bool isRemovableIfUnused() const;
 
 private:
     static std::string opToStr(Op anOperator);
@@ -193,6 +278,8 @@ struct Label : public Element {
     explicit Label(std::string name, bool isFunc = false);
 
     std::string toString() const override;
+    std::unique_ptr<Element> clone() const override;
+    std::string valueKey() const override;
 };
 
 struct BasicBlock {
@@ -204,6 +291,7 @@ struct BasicBlock {
     explicit BasicBlock(std::string labelName, bool isFunc = false);
 
     void addInst(Inst inst);
+    bool hasInstructions() const;
 
     void outputIR() const;
 };
@@ -219,6 +307,8 @@ class Function {
     BasicBlocks basicBlocks;
 
 public:
+    using UseDefChain = std::unordered_map<std::string, ValueRecord>;
+
     // id for BasicBlock & Temp
     // reset to 0 at start of Function
     static int idAllocator;
@@ -228,10 +318,15 @@ public:
     void moveBasicBlocks(BasicBlocks &&bBlocks);
 
     const BasicBlocks &getBasicBlocks() const;
+    BasicBlocks &getMutableBasicBlocks();
 
+    const std::string &getName() const;
     Type getReturnType() const;
 
     const Params &getParams() const;
+
+    UseDefChain buildUseDefChains();
+    bool replaceAllUsesWith(const Element &from, const Element &to);
 };
 
 // backend CodeGen should not rely on SymTab
@@ -264,6 +359,7 @@ public:
     explicit Module(std::string name);
 
     void outputIR() const;
+    void optimize();
 
     const std::vector<std::pair<std::string, GlobVar>> &getGlobVars() const;
     const std::vector<std::unique_ptr<Function>> &getFunctions() const;
