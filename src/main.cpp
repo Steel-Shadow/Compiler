@@ -1,6 +1,8 @@
 #include "AST/CompUnit.h"
+#include "backend/MIPS.h"
 #include "errorHandler/Error.h"
 #include "frontend/lexer/Lexer.h"
+#include "ir/IR.h"
 
 #include <fstream>
 #include <string>
@@ -9,6 +11,13 @@ namespace {
 void createEmptyOutputFile(const std::string &path) {
     if (!path.empty()) {
         std::ofstream output(path);
+    }
+}
+
+void writeTextFile(const std::string &path, const std::string &text) {
+    if (!path.empty()) {
+        std::ofstream output(path);
+        output << text;
     }
 }
 } // namespace
@@ -24,6 +33,12 @@ void compile(const std::string &inFile,
     createEmptyOutputFile(mipsFile);
 
     (void) CompUnit::parse();
+    if (!Error::hasError) {
+        IR::Module module("Compiler");
+        module.addBuiltinDeclarations();
+        writeTextFile(IRFile, module.toString());
+        writeTextFile(mipsFile, MIPS::generate(module));
+    }
 }
 
 int main(int argc, char *argv[]) {
