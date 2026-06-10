@@ -57,6 +57,10 @@ struct Frame {
     int frameSize{0};
 };
 
+std::string edgeKey(const std::string &pred, const std::string &target) {
+    return pred + "\n" + target;
+}
+
 class FunctionEmitter {
 public:
     FunctionEmitter(const IR::Function &function, std::ostream &out) :
@@ -69,6 +73,7 @@ public:
         out_ << "  sw $ra, " << frame_.frameSize - 4 << "($sp)\n";
         spillParameters();
         for (const auto &block: function_.blocks) {
+            currentBlock_ = block->name;
             out_ << labelOf(block->name) << ":\n";
             for (const auto &inst: block->instructions) {
                 emitInst(inst);
@@ -83,6 +88,9 @@ private:
     const IR::Function &function_;
     std::ostream &out_;
     Frame frame_;
+    std::unordered_map<std::string, std::vector<std::pair<IR::Operand, std::string>>> phiMoves_;
+    std::string currentBlock_;
+    int edgeId_{0};
 
     int reserveSlot(int bytes = 4) {
         frame_.nextOffset = alignTo(frame_.nextOffset, 4);
@@ -110,6 +118,20 @@ private:
             }
         }
         frame_.frameSize = alignTo(frame_.nextOffset + 8, 8);
+        collectPhiMoves();
+    }
+
+    void collectPhiMoves() {
+        for (const auto &block: function_.blocks) {
+            for (const auto &inst: block->instructions) {
+                if (inst.opcode != IR::Opcode::Phi) {
+                    continue;
+                }
+                for (const auto &incoming: inst.incoming) {
+                    phiMoves_[edgeKey(incoming.block, block->name)].push_back({incoming.value, inst.result});
+                }
+            }
+        }
     }
 
     void spillParameters() {
@@ -145,12 +167,12 @@ private:
                 emitICmp(inst);
                 break;
             case IR::Opcode::Br:
+                emitPhiMoves(labelName(inst.operands.front()));
                 out_ << "  j " << labelFromOperand(inst.operands.front()) << "\n";
                 break;
             case IR::Opcode::CondBr:
                 loadOperand(inst.operands[0], "$t0");
-                out_ << "  bne $t0, $zero, " << labelFromOperand(inst.operands[1]) << "\n";
-                out_ << "  j " << labelFromOperand(inst.operands[2]) << "\n";
+                emitCondBranchWithPhi(inst);
                 break;
             case IR::Opcode::Ret:
                 emitReturn(inst);
@@ -159,7 +181,6 @@ private:
                 emitCall(inst);
                 break;
             case IR::Opcode::Phi:
-                out_ << "  # TODO: lower phi " << inst.result << "\n";
                 break;
             case IR::Opcode::GetElementPtr:
                 emitGetElementPtr(inst);
@@ -174,11 +195,48 @@ private:
     }
 
     std::string labelFromOperand(const IR::Operand &operand) const {
+        return labelOf(labelName(operand));
+    }
+
+    static std::string labelName(const IR::Operand &operand) {
         std::string label = operand.text;
         if (!label.empty() && label.front() == '%') {
             label.erase(label.begin());
         }
-        return labelOf(label);
+        return label;
+    }
+
+    bool hasPhiMoves(const std::string &target) const {
+        auto it = phiMoves_.find(edgeKey(currentBlock_, target));
+        return it != phiMoves_.end() && !it->second.empty();
+    }
+
+    void emitPhiMoves(const std::string &target) {
+        auto it = phiMoves_.find(edgeKey(currentBlock_, target));
+        if (it == phiMoves_.end()) {
+            return;
+        }
+        for (const auto &[value, result]: it->second) {
+            loadOperand(value, "$t8");
+            storeValue(result, "$t8");
+        }
+    }
+
+    void emitCondBranchWithPhi(const IR::Instruction &inst) {
+        std::string trueTarget = labelName(inst.operands[1]);
+        std::string falseTarget = labelName(inst.operands[2]);
+        if (!hasPhiMoves(trueTarget) && !hasPhiMoves(falseTarget)) {
+            out_ << "  bne $t0, $zero, " << labelOf(trueTarget) << "\n";
+            out_ << "  j " << labelOf(falseTarget) << "\n";
+            return;
+        }
+        std::string trueEdge = sanitizeLabel(function_.name + "_" + currentBlock_ + "_to_" + trueTarget + "_" + std::to_string(edgeId_++));
+        out_ << "  bne $t0, $zero, " << trueEdge << "\n";
+        emitPhiMoves(falseTarget);
+        out_ << "  j " << labelOf(falseTarget) << "\n";
+        out_ << trueEdge << ":\n";
+        emitPhiMoves(trueTarget);
+        out_ << "  j " << labelOf(trueTarget) << "\n";
     }
 
     void loadOperand(const IR::Operand &operand, const std::string &reg) {

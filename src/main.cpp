@@ -3,6 +3,7 @@
 #include "errorHandler/Error.h"
 #include "frontend/lexer/Lexer.h"
 #include "ir/IRGenerator.h"
+#include "ir/Passes.h"
 
 #include <fstream>
 #include <string>
@@ -35,6 +36,7 @@ void compile(const std::string &inFile,
     auto compUnit = CompUnit::parse();
     if (!Error::hasError) {
         IR::Module module = IR::generateModule(*compUnit);
+        IR::runScalarMem2Reg(module);
         writeTextFile(IRFile, module.toString());
         writeTextFile(mipsFile, MIPS::generate(module));
     }
