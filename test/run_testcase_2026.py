@@ -4,7 +4,9 @@ import os
 import re
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from decimal import Decimal
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +25,22 @@ def find_default_mars_jar():
             candidates.extend(directory.glob(pattern))
     jars = sorted({path.resolve() for path in candidates if path.is_file()})
     return jars[0] if jars else None
+
+
+def parallel_timeout_scale(workers):
+    if workers <= 1:
+        return Decimal(1)
+    return min(max(Decimal(workers) / Decimal(2), Decimal(1)), Decimal(8))
+
+
+def with_scaled_timeouts(args, workers):
+    scale = parallel_timeout_scale(workers)
+    if scale == 1:
+        return args, scale
+    scaled = argparse.Namespace(**vars(args))
+    scaled.timeout *= float(scale)
+    scaled.mars_timeout *= float(scale)
+    return scaled, scale
 
 
 def run(cmd, cwd=None, env=None, timeout=None, stdin_path=None):
@@ -187,9 +205,44 @@ def run_error_case(compiler, case_dir, generated, work_root, timeout):
     return ok, detail
 
 
-def run_mars(mars_jar, mips_path, input_path, timeout):
-    cmd = ["java", "-jar", str(mars_jar), "nc", str(mips_path)]
-    return run(cmd, stdin_path=input_path, timeout=timeout)
+def run_mars(mars_jar, mips_path, input_path, timeout, cwd=None, collect_cycles=False):
+    cmd = ["java", "-jar", str(mars_jar.resolve()), "nc"]
+    if collect_cycles:
+        cmd.append("ic")
+    cmd.append(str(mips_path))
+    return run(cmd, cwd=cwd, stdin_path=input_path, timeout=timeout)
+
+
+def parse_final_cycle(stats_path):
+    match = None
+    for _ in range(10):
+        stats = text(stats_path)
+        match = re.search(r"^Final Cycle:\s*([0-9]+(?:\.[0-9]+)?)\s*$", stats, re.MULTILINE)
+        if match:
+            break
+        time.sleep(0.05)
+    if not match:
+        return None
+    return Decimal(match.group(1))
+
+
+def format_cycle(value):
+    if value == value.to_integral_value():
+        return str(value.to_integral_value())
+    return format(value.normalize(), "f")
+
+
+def strip_instruction_count_output(output):
+    lines = output.splitlines()
+    while lines and lines[-1] == "":
+        lines = lines[:-1]
+    if lines and re.fullmatch(r"\d+", lines[-1]):
+        lines = lines[:-1]
+        if lines and lines[-1] == "":
+            lines = lines[:-1]
+    if not lines:
+        return ""
+    return "\n".join(lines) + "\n"
 
 
 def mars_input_path(case_dir, out_dir):
@@ -212,7 +265,14 @@ def mars_input_path(case_dir, out_dir):
 
 
 def run_correct_case(
-    compiler, case_dir, generated, work_root, timeout, mars_jar, mars_timeout
+    compiler,
+    case_dir,
+    generated,
+    work_root,
+    timeout,
+    mars_jar,
+    mars_timeout,
+    collect_cycles,
 ):
     name = case_name(case_dir, generated)
     out_dir = work_root / name
@@ -222,36 +282,56 @@ def run_correct_case(
         return (
             False,
             f"compiler exited {result.returncode}: {result.stderr.decode(errors='replace')}",
+            None,
         )
     if actual_error.splitlines():
-        return False, f"expected no errors, got:\n{actual_error}"
+        return False, f"expected no errors, got:\n{actual_error}", None
 
     if mars_jar is None:
-        return True, ""
+        return True, "", None
 
+    stats_path = out_dir / "InstructionStatistics.txt"
+    try:
+        stats_path.unlink()
+    except FileNotFoundError:
+        pass
+    mips_path = (out_dir / "mips.txt").resolve()
+    input_path = mars_input_path(case_dir, out_dir).resolve()
     mars = run_mars(
-        mars_jar, out_dir / "mips.txt", mars_input_path(case_dir, out_dir), mars_timeout
+        mars_jar,
+        mips_path,
+        input_path,
+        mars_timeout,
+        cwd=out_dir,
+        collect_cycles=collect_cycles,
     )
     if mars.returncode != 0:
         return False, (
             f"Mars exited {mars.returncode}\n"
             f"stdout:\n{mars.stdout.decode(errors='replace')}\n"
             f"stderr:\n{mars.stderr.decode(errors='replace')}"
-        )
+        ), None
     actual = mars.stdout.decode(errors="replace").replace("\r\n", "\n")
+    final_cycle = None
+    if collect_cycles:
+        final_cycle = parse_final_cycle(stats_path)
+        actual = strip_instruction_count_output(actual)
+        if final_cycle is None:
+            return False, f"missing Final Cycle in {stats_path}", None
     expected = text(case_dir / "ans.txt")
     if not same_runtime_output(actual, expected):
         return (
             False,
             f"runtime output mismatch\nexpected:\n{expected}\nactual:\n{actual}",
+            None,
         )
-    return True, ""
+    return True, "", final_cycle
 
 
 def run_case(order, kind, index, total, case_dir, args, generated):
     name = case_name(case_dir, generated)
     if kind == "correct":
-        ok, detail = run_correct_case(
+        ok, detail, final_cycle = run_correct_case(
             args.compiler,
             case_dir,
             generated,
@@ -259,12 +339,14 @@ def run_case(order, kind, index, total, case_dir, args, generated):
             args.timeout,
             args.mars_jar,
             args.mars_timeout,
+            args.collect_cycles,
         )
     else:
         ok, detail = run_error_case(
             args.compiler, case_dir, generated, args.work_dir, args.timeout
         )
-    return order, kind, index, total, name, ok, detail
+        final_cycle = None
+    return order, kind, index, total, name, ok, detail, final_cycle
 
 
 def run_selected_cases(correct, errors, args, generated):
@@ -278,44 +360,60 @@ def run_selected_cases(correct, errors, args, generated):
         order += 1
 
     failures = []
+    final_cycle_sum = Decimal(0)
+    final_cycle_cases = 0
     if not jobs:
-        return failures
+        return failures, final_cycle_sum, final_cycle_cases
 
     workers = min(args.jobs, len(jobs))
     print(f"Jobs: {workers}")
+    case_args, timeout_scale = with_scaled_timeouts(args, workers)
+    if timeout_scale != 1:
+        print(
+            "Timeout scale: "
+            f"x{format_cycle(timeout_scale)} "
+            f"(compiler {case_args.timeout:g}s, Mars {case_args.mars_timeout:g}s)"
+        )
 
     if workers == 1:
         for job in jobs:
-            result = run_case(*job, args, generated)
-            order, kind, index, total, name, ok, detail = result
+            result = run_case(*job, case_args, generated)
+            order, kind, index, total, name, ok, detail, final_cycle = result
             print(
                 f"[{kind} {index}/{total}] {'PASS' if ok else 'FAIL'} {name}",
                 flush=True,
             )
             if not ok:
                 failures.append((order, name, detail))
-        return failures
+            elif final_cycle is not None:
+                final_cycle_sum += final_cycle
+                final_cycle_cases += 1
+        return failures, final_cycle_sum, final_cycle_cases
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(run_case, *job, args, generated): job for job in jobs
+            executor.submit(run_case, *job, case_args, generated): job for job in jobs
         }
         for future in as_completed(futures):
             job = futures[future]
             try:
-                order, kind, index, total, name, ok, detail = future.result()
+                order, kind, index, total, name, ok, detail, final_cycle = future.result()
             except Exception as exc:
                 order, kind, index, total, case_dir = job
                 name = case_name(case_dir, generated)
                 ok = False
                 detail = f"test runner failed: {exc!r}"
+                final_cycle = None
             print(
                 f"[{kind} {index}/{total}] {'PASS' if ok else 'FAIL'} {name}",
                 flush=True,
             )
             if not ok:
                 failures.append((order, name, detail))
-    return failures
+            elif final_cycle is not None:
+                final_cycle_sum += final_cycle
+                final_cycle_cases += 1
+    return failures, final_cycle_sum, final_cycle_cases
 
 
 def main():
@@ -344,6 +442,13 @@ def main():
     parser.add_argument("--mars-timeout", type=float, default=15.0)
     parser.add_argument("--mars-jar", type=Path)
     parser.add_argument(
+        "--no-cycles",
+        dest="collect_cycles",
+        action="store_false",
+        help="disable Mars final cycle collection for correct cases",
+    )
+    parser.set_defaults(collect_cycles=True)
+    parser.add_argument(
         "-j",
         "--jobs",
         type=int,
@@ -362,6 +467,8 @@ def main():
         raise SystemExit(f"Mars jar not found: {args.mars_jar}")
     if args.mars_jar is None:
         args.mars_jar = find_default_mars_jar()
+    if args.mars_jar is None:
+        args.collect_cycles = False
 
     ensure_repo(args.repo, args.repo_url, args.prepare)
     generated = ensure_generated(args.repo, args.prepare)
@@ -381,7 +488,9 @@ def main():
     elif args.mars_jar is not None:
         print(f"Mars: {args.mars_jar}")
 
-    failures = run_selected_cases(correct, errors, args, generated)
+    failures, final_cycle_sum, final_cycle_cases = run_selected_cases(
+        correct, errors, args, generated
+    )
 
     if failures:
         failures.sort(key=lambda failure: failure[0])
@@ -394,6 +503,11 @@ def main():
         return 1
 
     print("\nAll selected cases passed.")
+    if args.collect_cycles and final_cycle_cases:
+        print(
+            f"Final Cycle Sum: {format_cycle(final_cycle_sum)} "
+            f"({final_cycle_cases} correct case(s))"
+        )
     return 0
 
 
