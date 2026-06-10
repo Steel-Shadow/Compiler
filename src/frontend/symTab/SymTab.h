@@ -41,6 +41,7 @@ public:
 
     static Symbol *find(const std::string &ident);
     static std::pair<Symbol *, int> findWithDepth(const std::string &ident);
+    static std::vector<std::pair<Symbol *, int>> findAllWithDepth(const std::string &ident);
 
     // no effect if reDefine(ident)
     static void add(const std::string &ident, std::unique_ptr<Symbol> symbol, SymTab *where = cur);

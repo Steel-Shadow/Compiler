@@ -51,6 +51,17 @@ std::pair<Symbol *, int> SymTab::findWithDepth(const std::string &ident) {
     return {nullptr, -1};
 }
 
+std::vector<std::pair<Symbol *, int>> SymTab::findAllWithDepth(const std::string &ident) {
+    std::vector<std::pair<Symbol *, int>> matches;
+    for (auto p = cur; p != nullptr; p = p->prev) {
+        auto it = p->symbols.find(ident);
+        if (it != p->symbols.end()) {
+            matches.emplace_back(it->second.get(), p->depth);
+        }
+    }
+    return matches;
+}
+
 void SymTab::add(const std::string &ident, std::unique_ptr<Symbol> symbol, SymTab *where) {
     where->symbols.emplace(ident, std::move(symbol));
 }

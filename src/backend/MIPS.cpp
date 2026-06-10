@@ -5,6 +5,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace MIPS {
@@ -125,6 +126,8 @@ struct Frame {
     std::unordered_map<std::string, int> pointerSlots;
     std::unordered_map<std::string, std::string> labels;
     int nextOffset{0};
+    int phiTempOffset{-1};
+    int phiTempCount{0};
     int frameSize{0};
 };
 
@@ -146,8 +149,19 @@ public:
         for (const auto &block: function_.blocks) {
             currentBlock_ = block->name;
             out_ << labelOf(block->name) << ":\n";
-            for (const auto &inst: block->instructions) {
-                emitInst(inst);
+            for (size_t i = 0; i < block->instructions.size(); ++i) {
+                if (canFusePowerOfTwoRemainderBranch(block->instructions, i)) {
+                    emitPowerOfTwoRemainderBranch(block->instructions[i], block->instructions[i + 1], block->instructions[i + 2]);
+                    i += 2;
+                    continue;
+                }
+                if (canFuseICmpBranch(block->instructions, i)) {
+                    emitICmpToReg(block->instructions[i], "$t0");
+                    emitCondBranchWithPhi(block->instructions[i + 1]);
+                    ++i;
+                    continue;
+                }
+                emitInst(block->instructions[i]);
             }
         }
         if (function_.blocks.empty() || !function_.blocks.back()->terminated()) {
@@ -160,6 +174,7 @@ private:
     std::ostream &out_;
     Frame frame_;
     std::unordered_map<std::string, std::vector<std::pair<IR::Operand, std::string>>> phiMoves_;
+    std::unordered_map<std::string, int> useCounts_;
     std::string currentBlock_;
     int edgeId_{0};
 
@@ -171,6 +186,7 @@ private:
     }
 
     void buildFrame() {
+        collectUseCounts();
         for (const auto &param: function_.params) {
             frame_.valueSlots["%" + param.name] = reserveSlot();
         }
@@ -188,8 +204,34 @@ private:
                 }
             }
         }
-        frame_.frameSize = alignTo(frame_.nextOffset + 8, 8);
         collectPhiMoves();
+        for (const auto &[edge, moves]: phiMoves_) {
+            (void) edge;
+            frame_.phiTempCount = std::max(frame_.phiTempCount, static_cast<int>(moves.size()));
+        }
+        if (frame_.phiTempCount > 0) {
+            frame_.phiTempOffset = reserveSlot(frame_.phiTempCount * 4);
+        }
+        frame_.frameSize = alignTo(frame_.nextOffset + 8, 8);
+    }
+
+    void collectUseCounts() {
+        useCounts_.clear();
+        auto count = [this](const IR::Operand &operand) {
+            if (!operand.text.empty() && operand.text.front() == '%') {
+                ++useCounts_[operand.text];
+            }
+        };
+        for (const auto &block: function_.blocks) {
+            for (const auto &inst: block->instructions) {
+                for (const auto &operand: inst.operands) {
+                    count(operand);
+                }
+                for (const auto &incoming: inst.incoming) {
+                    count(incoming.value);
+                }
+            }
+        }
     }
 
     void collectPhiMoves() {
@@ -203,6 +245,12 @@ private:
                 }
             }
         }
+        for (auto &[edge, moves]: phiMoves_) {
+            (void) edge;
+            moves.erase(std::remove_if(moves.begin(), moves.end(), [](const auto &move) {
+                return move.first.text == move.second;
+            }), moves.end());
+        }
     }
 
     void spillParameters() {
@@ -211,8 +259,11 @@ private:
             auto name = "%" + function_.params[i].name;
             out_ << "  sw " << argRegs[i] << ", " << frame_.valueSlots[name] << "($sp)\n";
         }
-        if (function_.params.size() > 4) {
-            out_ << "  # TODO: load stack-passed parameters\n";
+        for (size_t i = 4; i < function_.params.size(); ++i) {
+            auto name = "%" + function_.params[i].name;
+            int callerArgOffset = frame_.frameSize + static_cast<int>((i - 4) * 4);
+            out_ << "  lw $t0, " << callerArgOffset << "($sp)\n";
+            out_ << "  sw $t0, " << frame_.valueSlots[name] << "($sp)\n";
         }
     }
 
@@ -265,6 +316,55 @@ private:
         }
     }
 
+    bool canFuseICmpBranch(const std::vector<IR::Instruction> &instructions, size_t index) const {
+        if (index + 1 >= instructions.size()) {
+            return false;
+        }
+        const auto &cmp = instructions[index];
+        const auto &branch = instructions[index + 1];
+        if (cmp.opcode != IR::Opcode::ICmp || branch.opcode != IR::Opcode::CondBr || branch.operands.empty()) {
+            return false;
+        }
+        if (branch.operands[0].text != cmp.result) {
+            return false;
+        }
+        auto it = useCounts_.find(cmp.result);
+        return it != useCounts_.end() && it->second == 1;
+    }
+
+    bool canFusePowerOfTwoRemainderBranch(const std::vector<IR::Instruction> &instructions, size_t index) const {
+        if (index + 2 >= instructions.size()) {
+            return false;
+        }
+        const auto &rem = instructions[index];
+        const auto &cmp = instructions[index + 1];
+        const auto &branch = instructions[index + 2];
+        if (rem.opcode != IR::Opcode::Binary || rem.op != "srem" || cmp.opcode != IR::Opcode::ICmp ||
+            branch.opcode != IR::Opcode::CondBr) {
+            return false;
+        }
+        if (cmp.op != "eq" && cmp.op != "ne") {
+            return false;
+        }
+        if (branch.operands.empty() || branch.operands[0].text != cmp.result) {
+            return false;
+        }
+        if (useCounts_.find(rem.result) == useCounts_.end() || useCounts_.at(rem.result) != 1 ||
+            useCounts_.find(cmp.result) == useCounts_.end() || useCounts_.at(cmp.result) != 1) {
+            return false;
+        }
+        if (rem.operands.size() < 2 || !isInteger(rem.operands[1].text)) {
+            return false;
+        }
+        int divisor = std::stoi(rem.operands[1].text);
+        if (divisor <= 0 || (divisor & (divisor - 1)) != 0) {
+            return false;
+        }
+        bool remIsLhs = cmp.operands[0].text == rem.result && isInteger(cmp.operands[1].text) && std::stoi(cmp.operands[1].text) == 0;
+        bool remIsRhs = cmp.operands[1].text == rem.result && isInteger(cmp.operands[0].text) && std::stoi(cmp.operands[0].text) == 0;
+        return remIsLhs || remIsRhs;
+    }
+
     std::string labelFromOperand(const IR::Operand &operand) const {
         return labelOf(labelName(operand));
     }
@@ -282,13 +382,42 @@ private:
         return it != phiMoves_.end() && !it->second.empty();
     }
 
+    static bool needsParallelCopy(const std::vector<std::pair<IR::Operand, std::string>> &moves) {
+        std::unordered_set<std::string> destinations;
+        for (const auto &[value, result]: moves) {
+            (void) value;
+            destinations.insert(result);
+        }
+        for (const auto &[value, result]: moves) {
+            if (!value.text.empty() && value.text != result && destinations.find(value.text) != destinations.end()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     void emitPhiMoves(const std::string &target) {
         auto it = phiMoves_.find(edgeKey(currentBlock_, target));
         if (it == phiMoves_.end()) {
             return;
         }
-        for (const auto &[value, result]: it->second) {
+        if (!needsParallelCopy(it->second)) {
+            for (const auto &[value, result]: it->second) {
+                loadOperand(value, "$t8");
+                storeValue(result, "$t8");
+            }
+            return;
+        }
+        for (size_t i = 0; i < it->second.size(); ++i) {
+            const auto &[value, result] = it->second[i];
+            (void) result;
             loadOperand(value, "$t8");
+            out_ << "  sw $t8, " << frame_.phiTempOffset + static_cast<int>(i * 4) << "($sp)\n";
+        }
+        for (size_t i = 0; i < it->second.size(); ++i) {
+            const auto &[value, result] = it->second[i];
+            (void) value;
+            out_ << "  lw $t8, " << frame_.phiTempOffset + static_cast<int>(i * 4) << "($sp)\n";
             storeValue(result, "$t8");
         }
     }
@@ -319,7 +448,7 @@ private:
             out_ << "  li " << reg << ", " << operand.text << "\n";
         } else if (operand.text.front() == '@') {
             const std::string global = stripPrefix(operand.text);
-            out_ << "  " << (operand.type == "i8" ? "lb" : "lw") << " " << reg << ", " << global << "\n";
+            out_ << "  " << (operand.type == "i8" ? "lbu" : "lw") << " " << reg << ", " << global << "\n";
         } else {
             auto it = frame_.valueSlots.find(operand.text);
             if (it == frame_.valueSlots.end()) {
@@ -364,13 +493,13 @@ private:
     void emitLoad(const IR::Instruction &inst) {
         const auto &ptr = inst.operands.front();
         if (!ptr.text.empty() && ptr.text.front() == '@') {
-            out_ << "  " << (inst.type == "i8" ? "lb" : "lw") << " $t0, " << stripPrefix(ptr.text) << "\n";
+            out_ << "  " << (inst.type == "i8" ? "lbu" : "lw") << " $t0, " << stripPrefix(ptr.text) << "\n";
         } else if (frame_.pointerSlots.find(ptr.text) != frame_.pointerSlots.end()) {
             auto it = frame_.pointerSlots.find(ptr.text);
-            out_ << "  " << (inst.type == "i8" ? "lb" : "lw") << " $t0, " << it->second << "($sp)\n";
+            out_ << "  " << (inst.type == "i8" ? "lbu" : "lw") << " $t0, " << it->second << "($sp)\n";
         } else {
             loadPointerAddress(ptr, "$t9");
-            out_ << "  " << (inst.type == "i8" ? "lb" : "lw") << " $t0, 0($t9)\n";
+            out_ << "  " << (inst.type == "i8" ? "lbu" : "lw") << " $t0, 0($t9)\n";
         }
         storeValue(inst.result, "$t0");
     }
@@ -426,6 +555,11 @@ private:
     }
 
     void emitICmp(const IR::Instruction &inst) {
+        emitICmpToReg(inst, "$t2");
+        storeValue(inst.result, "$t2");
+    }
+
+    void emitICmpToReg(const IR::Instruction &inst, const std::string &dest) {
         loadOperand(inst.operands[0], "$t0");
         loadOperand(inst.operands[1], "$t1");
         if (inst.op == "slt") {
@@ -446,7 +580,23 @@ private:
             out_ << "  # unsupported icmp " << inst.op << "\n";
             out_ << "  move $t2, $zero\n";
         }
-        storeValue(inst.result, "$t2");
+        if (dest != "$t2") {
+            out_ << "  move " << dest << ", $t2\n";
+        }
+    }
+
+    void emitPowerOfTwoRemainderBranch(const IR::Instruction &rem,
+                                       const IR::Instruction &cmp,
+                                       const IR::Instruction &branch) {
+        int divisor = std::stoi(rem.operands[1].text);
+        loadOperand(rem.operands[0], "$t0");
+        out_ << "  andi $t2, $t0, " << (divisor - 1) << "\n";
+        if (cmp.op == "eq") {
+            out_ << "  seq $t0, $t2, $zero\n";
+        } else {
+            out_ << "  sne $t0, $t2, $zero\n";
+        }
+        emitCondBranchWithPhi(branch);
     }
 
     void emitCast(const IR::Instruction &inst) {
@@ -502,10 +652,20 @@ private:
         for (size_t i = 0; i < inst.operands.size() && i < 4; ++i) {
             loadOperand(inst.operands[i], argRegs[i]);
         }
-        if (inst.operands.size() > 4) {
-            out_ << "  # TODO: pass arguments beyond $a3\n";
+        int extraCount = inst.operands.size() > 4 ? static_cast<int>(inst.operands.size() - 4) : 0;
+        int extraBytes = extraCount * 4;
+        for (size_t i = 4; i < inst.operands.size(); ++i) {
+            loadOperand(inst.operands[i], "$t0");
+            int offset = -extraBytes + static_cast<int>((i - 4) * 4);
+            out_ << "  sw $t0, " << offset << "($sp)\n";
+        }
+        if (extraBytes > 0) {
+            out_ << "  addiu $sp, $sp, -" << extraBytes << "\n";
         }
         out_ << "  jal " << inst.op << "\n";
+        if (extraBytes > 0) {
+            out_ << "  addiu $sp, $sp, " << extraBytes << "\n";
+        }
         if (!inst.result.empty()) {
             storeValue(inst.result, "$v0");
         }

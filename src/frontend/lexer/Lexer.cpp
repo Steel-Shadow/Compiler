@@ -66,6 +66,21 @@ char nextChar() {
     return c;
 }
 
+void skipWhitespaceAndDirectives() {
+    bool skipped;
+    do {
+        skipped = false;
+        while (c != EOF && isspace(static_cast<unsigned char>(c))) {
+            nextChar();
+            skipped = true;
+        }
+        if (c == '#') {
+            while (nextChar() != EOF && c != '\n') {}
+            skipped = true;
+        }
+    } while (skipped);
+}
+
 void reserve(const Token &t, LexType &l) {
     if (reserveWords.containsKey(t)) {
         l = reserveWords.get(t);
@@ -84,6 +99,7 @@ Word Lexer::next() {
     // Ident
     // IntConst
     // FormatString
+    skipWhitespaceAndDirectives();
 
     if (posTemp > fileContents.length()) {
         updateWords(LexType::LEX_END, "");
@@ -184,16 +200,12 @@ Word Lexer::next() {
     }
 
     if (lexType == LexType::COMMENT) {
-        while (isspace(c)) {
-            nextChar();
-        }
+        skipWhitespaceAndDirectives();
         next();
     } else {
         updateWords(lexType, token);
         output();
-        while (isspace(c)) {
-            nextChar();
-        }
+        skipWhitespaceAndDirectives();
     }
 
     return words[0];
@@ -325,7 +337,8 @@ void Lexer::init(const std::string &inFile, [[maybe_unused]] const std::string &
     buffer << inFileStream.rdbuf();
     fileContents = buffer.str();
 
-    while (isspace(nextChar())) {}
+    nextChar();
+    skipWhitespaceAndDirectives();
     for (size_t i = 0; i < deep; ++i) {
         next();
     }

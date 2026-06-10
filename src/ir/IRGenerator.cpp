@@ -234,10 +234,57 @@ private:
 
     void genBlock(const Block &block) {
         for (const auto &item: block.blockItems) {
+            if (builder_.block() && builder_.block()->terminated()) {
+                consumeScopes(*item);
+                continue;
+            }
             if (auto *decl = dynamic_cast<Decl *>(item.get())) {
                 genDecl(*decl);
             } else if (auto *stmt = dynamic_cast<Stmt *>(item.get())) {
                 genStmt(*stmt);
+            }
+        }
+    }
+
+    void consumeScopes(const BlockItem &item) {
+        auto *stmt = dynamic_cast<const Stmt *>(&item);
+        if (!stmt) {
+            return;
+        }
+        consumeStmtScopes(*stmt);
+    }
+
+    void consumeBlockScopes(const Block &block) {
+        for (const auto &item: block.blockItems) {
+            consumeScopes(*item);
+        }
+    }
+
+    void consumeStmtScopes(const Stmt &stmt) {
+        if (auto *blockStmt = dynamic_cast<const BlockStmt *>(&stmt)) {
+            SymTab::enterRecordedScope();
+            consumeBlockScopes(*blockStmt->block);
+            SymTab::leaveRecordedScope();
+        } else if (auto *ifStmt = dynamic_cast<const IfStmt *>(&stmt)) {
+            SymTab::enterRecordedScope();
+            consumeStmtScopes(*ifStmt->ifStmt);
+            if (ifStmt->elseStmt) {
+                consumeStmtScopes(*ifStmt->elseStmt);
+            }
+            SymTab::leaveRecordedScope();
+        } else if (auto *whileStmt = dynamic_cast<const WhileStmt *>(&stmt)) {
+            SymTab::enterRecordedScope();
+            consumeStmtScopes(*whileStmt->stmt);
+            SymTab::leaveRecordedScope();
+        } else if (auto *forStmt = dynamic_cast<const BigForStmt *>(&stmt)) {
+            SymTab::enterRecordedScope();
+            consumeStmtScopes(*forStmt->stmt);
+            SymTab::leaveRecordedScope();
+        } else if (auto *switchStmt = dynamic_cast<const SwitchStmt *>(&stmt)) {
+            for (const auto &caseStmt: switchStmt->cases) {
+                for (const auto &caseBodyStmt: caseStmt->stmts) {
+                    consumeStmtScopes(*caseBodyStmt);
+                }
             }
         }
     }
@@ -356,7 +403,7 @@ private:
         auto &thenBlock = builder_.createBlock("if.then");
         auto &elseBlock = builder_.createBlock("if.else");
         auto &endBlock = builder_.createBlock("if.end");
-        builder_.emitCondBr(asBool(genCond(*stmt.cond)), thenBlock.name, elseBlock.name);
+        genCondBr(*stmt.cond, thenBlock.name, elseBlock.name);
 
         builder_.setInsertPoint(thenBlock);
         genStmt(*stmt.ifStmt);
@@ -380,7 +427,7 @@ private:
         builder_.emitBr(condBlock.name);
 
         builder_.setInsertPoint(condBlock);
-        builder_.emitCondBr(asBool(genCond(*stmt.cond)), bodyBlock.name, endBlock.name);
+        genCondBr(*stmt.cond, bodyBlock.name, endBlock.name);
 
         breakTargets_.push(endBlock.name);
         continueTargets_.push(condBlock.name);
@@ -407,7 +454,7 @@ private:
 
         builder_.setInsertPoint(condBlock);
         if (stmt.cond) {
-            builder_.emitCondBr(asBool(genCond(*stmt.cond)), bodyBlock.name, endBlock.name);
+            genCondBr(*stmt.cond, bodyBlock.name, endBlock.name);
         } else {
             builder_.emitBr(bodyBlock.name);
         }
@@ -526,7 +573,15 @@ private:
     }
 
     Operand genCond(const Cond &cond) {
-        return genLOr(*cond.lorExp);
+        auto &trueBlock = builder_.createBlock("cond.true");
+        auto &falseBlock = builder_.createBlock("cond.false");
+        auto &endBlock = builder_.createBlock("cond.end");
+        genCondBr(cond, trueBlock.name, falseBlock.name);
+        return boolPhi("cond", trueBlock, falseBlock, endBlock);
+    }
+
+    void genCondBr(const Cond &cond, const std::string &trueTarget, const std::string &falseTarget) {
+        genLOrBr(*cond.lorExp, trueTarget, falseTarget);
     }
 
     Operand genExp(const Exp &exp) {
@@ -570,21 +625,76 @@ private:
     }
 
     Operand genLAnd(const LAndExp &exp) {
-        Operand value = asBool(genEq(*exp.first));
-        for (size_t i = 0; i < exp.ops.size(); ++i) {
-            Operand rhs = asBool(genEq(*exp.elements[i]));
-            value = builder_.emitBinary("and", Type::Int, asInt(value), asInt(rhs), "and");
+        if (exp.elements.empty()) {
+            return asBool(genEq(*exp.first));
         }
-        return value;
+
+        auto &falseBlock = builder_.createBlock("land.false");
+        auto &trueBlock = builder_.createBlock("land.true");
+        auto &endBlock = builder_.createBlock("land.end");
+        genLAndBr(exp, trueBlock.name, falseBlock.name);
+        return boolPhi("land", trueBlock, falseBlock, endBlock);
     }
 
     Operand genLOr(const LOrExp &exp) {
-        Operand value = asBool(genLAnd(*exp.first));
-        for (size_t i = 0; i < exp.ops.size(); ++i) {
-            Operand rhs = asBool(genLAnd(*exp.elements[i]));
-            value = builder_.emitBinary("or", Type::Int, asInt(value), asInt(rhs), "or");
+        if (exp.elements.empty()) {
+            return genLAnd(*exp.first);
         }
-        return value;
+
+        auto &trueBlock = builder_.createBlock("lor.true");
+        auto &falseBlock = builder_.createBlock("lor.false");
+        auto &endBlock = builder_.createBlock("lor.end");
+        genLOrBr(exp, trueBlock.name, falseBlock.name);
+        return boolPhi("lor", trueBlock, falseBlock, endBlock);
+    }
+
+    void genLOrBr(const LOrExp &exp, const std::string &trueTarget, const std::string &falseTarget) {
+        if (exp.elements.empty()) {
+            genLAndBr(*exp.first, trueTarget, falseTarget);
+            return;
+        }
+
+        auto &firstNext = builder_.createBlock("lor.next");
+        genLAndBr(*exp.first, trueTarget, firstNext.name);
+        builder_.setInsertPoint(firstNext);
+        for (size_t i = 0; i + 1 < exp.elements.size(); ++i) {
+            auto &next = builder_.createBlock("lor.next");
+            genLAndBr(*exp.elements[i], trueTarget, next.name);
+            builder_.setInsertPoint(next);
+        }
+        genLAndBr(*exp.elements.back(), trueTarget, falseTarget);
+    }
+
+    void genLAndBr(const LAndExp &exp, const std::string &trueTarget, const std::string &falseTarget) {
+        if (exp.elements.empty()) {
+            builder_.emitCondBr(asBool(genEq(*exp.first)), trueTarget, falseTarget);
+            return;
+        }
+
+        auto &firstNext = builder_.createBlock("land.next");
+        builder_.emitCondBr(asBool(genEq(*exp.first)), firstNext.name, falseTarget);
+        builder_.setInsertPoint(firstNext);
+        for (size_t i = 0; i + 1 < exp.elements.size(); ++i) {
+            auto &next = builder_.createBlock("land.next");
+            builder_.emitCondBr(asBool(genEq(*exp.elements[i])), next.name, falseTarget);
+            builder_.setInsertPoint(next);
+        }
+        builder_.emitCondBr(asBool(genEq(*exp.elements.back())), trueTarget, falseTarget);
+    }
+
+    Operand boolPhi(const std::string &hint, BasicBlock &trueBlock, BasicBlock &falseBlock, BasicBlock &endBlock) {
+        builder_.setInsertPoint(trueBlock);
+        builder_.emitBr(endBlock.name);
+        builder_.setInsertPoint(falseBlock);
+        builder_.emitBr(endBlock.name);
+
+        builder_.setInsertPoint(endBlock);
+        std::string result = builder_.function()->newTemp(hint);
+        builder_.block()->add(Instruction::phi(result, Type::Int, {
+                {Operand::constant(Type::Int, 1), trueBlock.name},
+                {Operand::constant(Type::Int, 0), falseBlock.name},
+        }));
+        return Operand(typeToIR(Type::Int), result);
     }
 
     Operand genUnary(const UnaryExp &exp) {
@@ -622,9 +732,10 @@ private:
     Operand genCall(FuncCall &call) {
         std::vector<Operand> args;
         if (call.funcRParams) {
-            args.reserve(call.funcRParams->params.size());
-            for (const auto &param: call.funcRParams->params) {
-                args.push_back(genExp(*param));
+            const auto &params = call.funcRParams->params;
+            args.resize(params.size());
+            for (size_t i = params.size(); i-- > 0;) {
+                args[i] = genExp(*params[i]);
             }
         }
         Type returnType = call.getType();
@@ -632,19 +743,17 @@ private:
     }
 
     Storage *lookupStorage(const std::string &ident) {
-        auto [symbol, depth] = SymTab::findWithDepth(ident);
-        (void) depth;
-        if (!symbol) {
-            return nullptr;
-        }
-        auto it = storage_.find(symbol);
-        if (it != storage_.end()) {
-            return &it->second;
-        }
-        auto *value = symbol->asValue();
-        if (value) {
-            storage_[symbol] = {Operand("ptr", "@" + ident), ptrToValue(value->getType()), value->getDims(), false};
-            return &storage_[symbol];
+        for (auto [symbol, depth]: SymTab::findAllWithDepth(ident)) {
+            auto it = storage_.find(symbol);
+            if (it != storage_.end()) {
+                return &it->second;
+            }
+
+            auto *value = symbol->asValue();
+            if (value && depth == 0) {
+                storage_[symbol] = {Operand("ptr", "@" + ident), ptrToValue(value->getType()), value->getDims(), false};
+                return &storage_[symbol];
+            }
         }
         return nullptr;
     }
@@ -684,7 +793,8 @@ private:
     }
 
     Operand linearIndex(const LVal &lVal, const std::vector<int> &dims) {
-        Operand total = Operand::constant(Type::Int, 0);
+        Operand total;
+        bool hasTerm = false;
         int product = 1;
         for (size_t i = dims.size(); i-- > 0;) {
             if (i + 1 < dims.size()) {
@@ -697,9 +807,14 @@ private:
             if (product != 1) {
                 part = builder_.emitBinary("mul", Type::Int, std::move(part), Operand::constant(Type::Int, product), "idxmul");
             }
-            total = builder_.emitBinary("add", Type::Int, std::move(total), std::move(part), "idx");
+            if (!hasTerm) {
+                total = std::move(part);
+                hasTerm = true;
+            } else {
+                total = builder_.emitBinary("add", Type::Int, std::move(total), std::move(part), "idx");
+            }
         }
-        return total;
+        return hasTerm ? total : Operand::constant(Type::Int, 0);
     }
 
     Operand asInt(Operand value) {

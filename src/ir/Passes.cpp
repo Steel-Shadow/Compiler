@@ -1,5 +1,6 @@
 #include "ir/Passes.h"
 
+#include <algorithm>
 #include <map>
 #include <set>
 #include <unordered_map>
@@ -40,6 +41,7 @@ public:
         }
         rewriteBlocks();
         finalizePhiIncoming();
+        simplifyTrivialPhis();
     }
 
 private:
@@ -230,6 +232,66 @@ private:
                     inst.incoming.push_back({valueFromPred(pred, site.var, site.type), pred});
                 }
             }
+        }
+    }
+
+    void simplifyTrivialPhis() {
+        bool changed = false;
+        do {
+            changed = false;
+            for (auto &blockPtr: function_->blocks) {
+                for (auto &inst: blockPtr->instructions) {
+                    if (inst.opcode != Opcode::Phi || replacements_.find(inst.result) != replacements_.end()) {
+                        continue;
+                    }
+                    Operand replacement;
+                    if (trivialPhiReplacement(inst, replacement)) {
+                        replacements_[inst.result] = resolve(std::move(replacement));
+                        changed = true;
+                    }
+                }
+            }
+            if (changed) {
+                rewriteAllOperands();
+                removeReplacedPhis();
+            }
+        } while (changed);
+    }
+
+    bool trivialPhiReplacement(const Instruction &inst, Operand &replacement) {
+        bool hasReplacement = false;
+        for (const auto &incoming: inst.incoming) {
+            Operand value = resolve(incoming.value);
+            if (value.text == inst.result) {
+                continue;
+            }
+            if (!hasReplacement) {
+                replacement = std::move(value);
+                hasReplacement = true;
+            } else if (!sameOperand(replacement, value)) {
+                return false;
+            }
+        }
+        return hasReplacement;
+    }
+
+    void rewriteAllOperands() {
+        for (auto &blockPtr: function_->blocks) {
+            for (auto &inst: blockPtr->instructions) {
+                replaceOperands(inst);
+                for (auto &incoming: inst.incoming) {
+                    incoming.value = resolve(std::move(incoming.value));
+                }
+            }
+        }
+    }
+
+    void removeReplacedPhis() {
+        for (auto &blockPtr: function_->blocks) {
+            auto &instructions = blockPtr->instructions;
+            instructions.erase(std::remove_if(instructions.begin(), instructions.end(), [this](const Instruction &inst) {
+                return inst.opcode == Opcode::Phi && replacements_.find(inst.result) != replacements_.end();
+            }), instructions.end());
         }
     }
 
