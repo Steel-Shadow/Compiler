@@ -63,18 +63,30 @@ src/
 
 ## 构建与运行
 
-项目使用 CMake 构建。使用普通 Ninja / Makefile 生成器时，可执行文件默认输出到 `build/src/Compiler`；在 Windows 上对应为 `build/src/Compiler.exe`。
+项目使用 CMake 构建。使用普通 Ninja / Makefile 生成器时，可执行文件默认输出到 `build/Compiler`；在 Windows 上对应为 `build/Compiler.exe`。
 
 ```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
+也可以使用仓库根目录下的 `make.py` 执行本地构建和提交包生成：
+
+```bash
+python3 make.py build
+python3 make.py package
+python3 make.py verify-package
+```
+
+其中 `package` 会生成 `dist/Compiler-submit.zip`，压缩包顶层包含平台需要的 `CMakeLists.txt`、`config.json` 和 `src/` 源码目录；`verify-package` 会将该压缩包解到临时目录并重新用 CMake 构建，便于提交前检查是否漏文件。`config.json` 当前声明目标代码类型为 `MIPS`。
+
 默认运行方式：
 
 ```bash
-./build/src/Compiler testfile.txt lexer.txt error.txt ir.txt mips.txt
+./build/Compiler testfile.txt lexer.txt error.txt ir.txt mips.txt
 ```
+
+按代码生成二作业的默认评测方式运行时，可直接在工作目录提供 `testfile.txt` 后执行 `Compiler`，编译器会读取 `testfile.txt` 并生成 `mips.txt`。编译器自身不会读取标准输入。
 
 调试输出由 [src/config.h](src/config.h) 和 CMake 选项控制。默认输出错误和 MIPS；需要额外打开 `MY_DEBUG` 下的 IR、词法、语法或 stdout 输出时，配置时加入：
 

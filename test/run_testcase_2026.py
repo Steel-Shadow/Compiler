@@ -14,7 +14,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_REPO_URL = "git@github.com:compile-technology-buaa/testcase-2026.git"
 DEFAULT_REPO = ROOT / "test" / "vendor" / "testcase-2026"
 DEFAULT_WORK = ROOT / "test" / "work" / "testcase-2026"
-DEFAULT_COMPILER = ROOT / "build" / "src" / "Compiler"
+DEFAULT_COMPILER = ROOT / "build" / "Compiler"
 MARS_JAR_PATTERNS = ("Mars*.jar", "mars*.jar", "*Mars*.jar", "*mars*.jar")
 
 

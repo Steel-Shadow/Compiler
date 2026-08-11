@@ -10,6 +10,7 @@ __pycache__/
 
 cmake-build-*/
 build/
+dist/
 InstructionStatistics.txt
 test/vendor/
 test/work/
