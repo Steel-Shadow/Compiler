@@ -1,6 +1,7 @@
 #include "middle/Optimize.h"
 
 #include "middle/Analysis.h"
+#include "middle/IRUtils.h"
 
 #include <algorithm>
 #include <optional>
@@ -19,6 +20,7 @@ bool isPRECandidate(Op op) {
         case Op::Mul:
         case Op::And:
         case Op::Or:
+        case Op::Xor:
         case Op::Leq:
         case Op::Lss:
         case Op::Geq:
@@ -33,11 +35,6 @@ bool isPRECandidate(Op op) {
         default:
             return false;
     }
-}
-
-bool isCommutative(Op op) {
-    return op == Op::Add || op == Op::Mul || op == Op::And || op == Op::Or
-           || op == Op::Eql || op == Op::Neq;
 }
 
 std::string expressionKey(const Inst &inst) {
@@ -55,31 +52,11 @@ std::string expressionKey(const Inst &inst) {
            + lhs + ":" + rhs;
 }
 
-int nextTempId(const Function &function) {
-    int next = 0;
-    for (const auto &block: function.getBasicBlocks()) {
-        for (const auto &inst: block->instructions) {
-            for (const auto &operand: inst.operands()) {
-                const auto *temp = dynamic_cast<const Temp *>(operand.value);
-                if (temp && temp->id >= next) {
-                    next = temp->id + 1;
-                }
-            }
-        }
-    }
-    return next;
-}
-
-struct Definition {
-    size_t block{};
-    size_t instruction{};
-};
-
 bool operandsDominatePredecessors(
         const Inst &inst,
         const std::vector<size_t> &predecessors,
         const ControlFlowGraph &cfg,
-        const std::unordered_map<int, Definition> &definitions) {
+        const TempDefinitions &definitions) {
     for (int operand: usedTemps(inst)) {
         auto definition = definitions.find(operand);
         if (definition == definitions.end()) {
@@ -119,14 +96,7 @@ bool eliminatePartialRedundancy(Function &function) {
         return false;
     }
 
-    std::unordered_map<int, Definition> definitions;
-    for (size_t block = 0; block < blocks.size(); ++block) {
-        for (size_t index = 0; index < blocks[block]->instructions.size(); ++index) {
-            if (auto definition = definedTemp(blocks[block]->instructions[index])) {
-                definitions[*definition] = {block, index};
-            }
-        }
-    }
+    const auto definitions = collectTempDefinitions(function);
     std::vector<std::unordered_map<std::string, Temp>> available;
     available.reserve(blocks.size());
     for (const auto &block: blocks) {

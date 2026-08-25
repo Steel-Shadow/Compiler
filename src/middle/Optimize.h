@@ -11,6 +11,8 @@ bool eliminateCommonSubexpressions(Function &function);
 bool eliminateDeadScalarStores(Function &function);
 bool hoistLoopInvariantCode(Function &function);
 bool reduceInductionVariableStrength(Function &function);
+bool simplifyClosedFormLoops(Function &function);
+bool optimizeModularArithmetic(Function &function);
 bool eliminateTailRecursion(Function &function);
 bool hoistReadOnlyGlobalLoads(Function &function);
 bool promoteMemoryToRegisters(Function &function);
@@ -25,6 +27,11 @@ bool eliminatePartialRedundancy(Function &function);
 bool optimizeMemoryValues(Function &function);
 bool orderBasicBlocks(Function &function);
 bool inlineFunctions(Module &module);
+bool inlineTrivialFunctions(Module &module);
+bool inlineLinearFunctions(Module &module);
+bool inlineLinearArrayFunctions(Module &module);
+bool specializeConstantArguments(Module &module);
+bool optimizeInterproceduralCalls(Module &module);
 bool eliminateUnreachableFunctions(Module &module);
 
 } // namespace IR

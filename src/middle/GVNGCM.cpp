@@ -2,6 +2,7 @@
 
 #include "errorHandler/Error.h"
 #include "middle/Analysis.h"
+#include "middle/IRUtils.h"
 
 #include <algorithm>
 #include <functional>
@@ -17,19 +18,6 @@
 namespace IR {
 namespace {
 
-const Temp *asTemp(const std::unique_ptr<Element> &element) {
-    return dynamic_cast<const Temp *>(element.get());
-}
-
-const ConstVal *asConstant(const std::unique_ptr<Element> &element) {
-    return dynamic_cast<const ConstVal *>(element.get());
-}
-
-bool isCommutative(Op op) {
-    return op == Op::Add || op == Op::Mul || op == Op::And || op == Op::Or
-           || op == Op::Eql || op == Op::Neq;
-}
-
 bool isValueNumberCandidate(Op op) {
     switch (op) {
         case Op::LoadImd:
@@ -41,6 +29,7 @@ bool isValueNumberCandidate(Op op) {
         case Op::Mod:
         case Op::And:
         case Op::Or:
+        case Op::Xor:
         case Op::Leq:
         case Op::Lss:
         case Op::Geq:
@@ -66,6 +55,7 @@ bool isSpeculatable(Op op) {
         case Op::Mul:
         case Op::And:
         case Op::Or:
+        case Op::Xor:
         case Op::Leq:
         case Op::Lss:
         case Op::Geq:

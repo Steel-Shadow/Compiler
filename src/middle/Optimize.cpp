@@ -2,6 +2,7 @@
 
 #include "errorHandler/Error.h"
 #include "middle/Analysis.h"
+#include "middle/IRUtils.h"
 
 #include <algorithm>
 #include <functional>
@@ -24,18 +25,6 @@ struct KnownConstant {
     Type type{Type::Int};
 };
 
-const Temp *asTemp(const std::unique_ptr<Element> &element) {
-    return dynamic_cast<const Temp *>(element.get());
-}
-
-const ConstVal *asConstant(const std::unique_ptr<Element> &element) {
-    return dynamic_cast<const ConstVal *>(element.get());
-}
-
-const Var *asVar(const std::unique_ptr<Element> &element) {
-    return dynamic_cast<const Var *>(element.get());
-}
-
 std::unordered_map<int, int> countTempDefinitions(const Function &function) {
     std::unordered_map<int, int> counts;
     for (const auto &block: function.getBasicBlocks()) {
@@ -51,10 +40,6 @@ std::unordered_map<int, int> countTempDefinitions(const Function &function) {
 bool hasSingleDefinition(const std::unordered_map<int, int> &counts, int temp) {
     auto definition = counts.find(temp);
     return definition != counts.end() && definition->second == 1;
-}
-
-int normalizeForType(int value, Type type) {
-    return type == Type::Char ? value & 0xFF : value;
 }
 
 bool getKnownConstant(const Element *element,
@@ -416,11 +401,6 @@ bool simplifyRemainderTests(Function &function) {
     return changed;
 }
 
-bool isCommutative(Op op) {
-    return op == Op::Add || op == Op::Mul || op == Op::And || op == Op::Or
-           || op == Op::Eql || op == Op::Neq;
-}
-
 bool isGVNCandidate(Op op) {
     switch (op) {
         case Op::Add:
@@ -430,6 +410,7 @@ bool isGVNCandidate(Op op) {
         case Op::Mod:
         case Op::And:
         case Op::Or:
+        case Op::Xor:
         case Op::Leq:
         case Op::Lss:
         case Op::Geq:
@@ -531,6 +512,7 @@ bool isSafeToHoist(Op op) {
         case Op::Mul:
         case Op::And:
         case Op::Or:
+        case Op::Xor:
         case Op::Leq:
         case Op::Lss:
         case Op::Geq:
@@ -1409,12 +1391,19 @@ bool hoistLoopInvariantCode(Function &function) {
 
     const auto definitionCounts = countTempDefinitions(function);
     std::unordered_map<int, size_t> definitionBlock;
+    std::unordered_set<int> knownNonZeroConstants;
     const auto &constBlocks = function.getBasicBlocks();
     for (size_t block = 0; block < constBlocks.size(); ++block) {
         for (const auto &inst: constBlocks[block]->instructions) {
             if (auto definition = definedTemp(inst);
                 definition && hasSingleDefinition(definitionCounts, *definition)) {
                 definitionBlock[*definition] = block;
+                const auto *constant = inst.op == Op::LoadImd
+                                               ? dynamic_cast<const ConstVal *>(inst.arg1.get())
+                                               : nullptr;
+                if (constant && constant->value != 0) {
+                    knownNonZeroConstants.insert(*definition);
+                }
             }
         }
     }
@@ -1449,8 +1438,16 @@ bool hoistLoopInvariantCode(Function &function) {
                 for (size_t index = 0; index < instructions.size();) {
                     auto &inst = instructions[index];
                     auto definition = definedTemp(inst);
+                    const auto *divisor = dynamic_cast<const Temp *>(inst.arg2.get());
+                    const auto *immediateDivisor = dynamic_cast<const ConstVal *>(
+                            inst.arg2.get());
+                    const bool safeDivision = (inst.op == Op::Div || inst.op == Op::Mod)
+                                              && ((divisor
+                                                   && knownNonZeroConstants.count(divisor->id) != 0)
+                                                  || (immediateDivisor
+                                                      && immediateDivisor->value != 0));
                     if (!definition || !hasSingleDefinition(definitionCounts, *definition)
-                        || !isSafeToHoist(inst.op)
+                        || (!isSafeToHoist(inst.op) && !safeDivision)
                         || !operandsAreLoopInvariant(inst, loop, definitionBlock, invariantTemps)) {
                         ++index;
                         continue;
@@ -1660,6 +1657,7 @@ bool hoistReadOnlyGlobalLoads(Function &function) {
                     loads[*var].push_back(*result);
                 }
             } else if (inst.op == Op::Store || inst.op == Op::StoreDynamic
+                       || inst.op == Op::MemZero
                        || inst.op == Op::GetString) {
                 modified.insert(*var);
             }

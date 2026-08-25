@@ -12,7 +12,6 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parent
 DEFAULT_BUILD_DIR = ROOT / "build"
 DEFAULT_DIST_DIR = ROOT / "dist"
@@ -41,26 +40,30 @@ def run(cmd: list[str], cwd: Path = ROOT) -> None:
 
 
 def cmake_configure(build_dir: Path, build_type: str) -> None:
-    run([
-        "cmake",
-        "-S",
-        str(ROOT),
-        "-B",
-        str(build_dir),
-        f"-DCMAKE_BUILD_TYPE={build_type}",
-    ])
+    run(
+        [
+            "cmake",
+            "-S",
+            str(ROOT),
+            "-B",
+            str(build_dir),
+            f"-DCMAKE_BUILD_TYPE={build_type}",
+        ]
+    )
 
 
 def cmake_build(build_dir: Path) -> None:
-    run([
-        "cmake",
-        "--build",
-        str(build_dir),
-        "--target",
-        "Compiler",
-        "--parallel",
-        str(os.cpu_count() or 2),
-    ])
+    run(
+        [
+            "cmake",
+            "--build",
+            str(build_dir),
+            "--target",
+            "Compiler",
+            "--parallel",
+            str(os.cpu_count() or 2),
+        ]
+    )
 
 
 def command_build(args: argparse.Namespace) -> None:
@@ -71,7 +74,9 @@ def command_build(args: argparse.Namespace) -> None:
 def iter_submission_paths() -> list[Path]:
     paths: list[Path] = [ROOT / name for name in SUBMISSION_FILES]
     for path in sorted((ROOT / "src").rglob("*")):
-        if path.is_file() and (path.name == "CMakeLists.txt" or path.suffix in SOURCE_SUFFIXES):
+        if path.is_file() and (
+            path.name == "CMakeLists.txt" or path.suffix in SOURCE_SUFFIXES
+        ):
             paths.append(path)
     return paths
 
@@ -81,7 +86,11 @@ def command_package(args: argparse.Namespace) -> None:
         args.output.unlink()
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
-    missing = [str(path.relative_to(ROOT)) for path in iter_submission_paths() if not path.exists()]
+    missing = [
+        str(path.relative_to(ROOT))
+        for path in iter_submission_paths()
+        if not path.exists()
+    ]
     if missing:
         raise SystemExit("missing required submission files: " + ", ".join(missing))
 
@@ -100,8 +109,29 @@ def command_verify_package(args: argparse.Namespace) -> None:
             archive.extractall(temp_dir)
 
         build_dir = temp_dir / "build"
-        run(["cmake", "-S", str(temp_dir), "-B", str(build_dir), "-DCMAKE_BUILD_TYPE=Release"], cwd=temp_dir)
-        run(["cmake", "--build", str(build_dir), "--target", "Compiler", "--parallel", str(os.cpu_count() or 2)], cwd=temp_dir)
+        run(
+            [
+                "cmake",
+                "-S",
+                str(temp_dir),
+                "-B",
+                str(build_dir),
+                "-DCMAKE_BUILD_TYPE=Release",
+            ],
+            cwd=temp_dir,
+        )
+        run(
+            [
+                "cmake",
+                "--build",
+                str(build_dir),
+                "--target",
+                "Compiler",
+                "--parallel",
+                str(os.cpu_count() or 2),
+            ],
+            cwd=temp_dir,
+        )
     print("package verification passed")
 
 
@@ -113,10 +143,14 @@ def command_clean(args: argparse.Namespace) -> None:
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build/package helper for the Compiler project.")
+    parser = argparse.ArgumentParser(
+        description="Build/package helper for the Compiler project."
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    build = subparsers.add_parser("build", help="configure and build the Compiler executable")
+    build = subparsers.add_parser(
+        "build", help="configure and build the Compiler executable"
+    )
     build.add_argument("--build-dir", type=Path, default=DEFAULT_BUILD_DIR)
     build.add_argument("--build-type", default="Release")
     build.set_defaults(func=command_build)
@@ -125,7 +159,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     package.add_argument("-o", "--output", type=Path, default=DEFAULT_PACKAGE)
     package.set_defaults(func=command_package)
 
-    verify = subparsers.add_parser("verify-package", help="create and rebuild the submission zip in a temp dir")
+    verify = subparsers.add_parser(
+        "verify-package", help="create and rebuild the submission zip in a temp dir"
+    )
     verify.add_argument("-o", "--output", type=Path, default=DEFAULT_PACKAGE)
     verify.set_defaults(func=command_verify_package)
 

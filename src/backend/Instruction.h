@@ -17,10 +17,12 @@ enum class Op {
     addu,
     subu,
     mul,
+    mult,
     div,
     mfhi,
     and_,
     or_,
+    xor_,
     addi,
 
     add,
@@ -118,6 +120,7 @@ void InStack(const IR::Inst &);
 void OutStack(const IR::Inst &);
 void Store(const IR::Inst &);
 void StoreDynamic(const IR::Inst &);
+void MemZero(const IR::Inst &);
 void Add(const IR::Inst &);
 void Sub(const IR::Inst &);
 void Mul(const IR::Inst &);
@@ -125,6 +128,9 @@ void Div(const IR::Inst &);
 void Mod(const IR::Inst &);
 void And(const IR::Inst &);
 void Or(const IR::Inst &);
+void Xor(const IR::Inst &);
+void XorLimb(const IR::Inst &);
+void AndLimb(const IR::Inst &);
 void Neg(const IR::Inst &);
 void Not(const IR::Inst &);
 void LoadImd(const IR::Inst &);
@@ -142,6 +148,7 @@ void Bif0(const IR::Inst &);
 void Call(const IR::Inst &);
 void PushParam(const IR::Inst &);
 void PushAddressParam(const IR::Inst &);
+void MoveAddressToRegister(const IR::Inst &, Register);
 void Ret(const IR::Inst &);
 void RetMain(const IR::Inst &);
 void NewMove(const IR::Inst &);

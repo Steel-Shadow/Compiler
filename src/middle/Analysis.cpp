@@ -1,5 +1,7 @@
 #include "middle/Analysis.h"
 
+#include "middle/IRUtils.h"
+
 #include <algorithm>
 #include <functional>
 #include <queue>
@@ -7,14 +9,6 @@
 
 namespace IR {
 namespace {
-
-const Label *asLabel(const std::unique_ptr<Element> &element) {
-    return dynamic_cast<const Label *>(element.get());
-}
-
-const Var *asVar(const std::unique_ptr<Element> &element) {
-    return dynamic_cast<const Var *>(element.get());
-}
 
 void appendUnique(std::vector<size_t> &values, size_t value) {
     if (std::find(values.begin(), values.end(), value) == values.end()) {
@@ -40,12 +34,42 @@ void unionInto(Set &target, const Set &source) {
     target.insert(source.begin(), source.end());
 }
 
+NaturalLoops findNaturalLoopsImpl(const ControlFlowGraph &cfg, bool reachableOnly) {
+    NaturalLoops loops;
+    for (size_t latch = 0; latch < cfg.successors.size(); ++latch) {
+        if (reachableOnly
+            && (latch >= cfg.reachable.size() || !cfg.reachable[latch])) {
+            continue;
+        }
+        for (size_t header: cfg.successors[latch]) {
+            if (!cfg.dominates(header, latch)) {
+                continue;
+            }
+            auto &loop = loops[header];
+            loop.insert(header);
+            loop.insert(latch);
+            std::vector<size_t> work{latch};
+            while (!work.empty()) {
+                const size_t block = work.back();
+                work.pop_back();
+                for (size_t predecessor: cfg.predecessors[block]) {
+                    if (loop.insert(predecessor).second && predecessor != header) {
+                        work.push_back(predecessor);
+                    }
+                }
+            }
+        }
+    }
+    return loops;
+}
+
 VarSet escapedScalarVariables(const Function &function) {
     VarSet escaped;
     for (const auto &block: function.getBasicBlocks()) {
         for (const auto &inst: block->instructions) {
             switch (inst.op) {
                 case Op::StoreDynamic:
+                case Op::MemZero:
                 case Op::LoadDynamic:
                 case Op::PushAddressParam:
                 case Op::PrintStr:
@@ -252,32 +276,13 @@ ControlFlowGraph buildControlFlowGraph(const Function &function) {
     return cfg;
 }
 
+NaturalLoops collectNaturalLoops(const ControlFlowGraph &cfg) {
+    return findNaturalLoopsImpl(cfg, false);
+}
+
 std::vector<size_t> computeLoopDepths(const ControlFlowGraph &cfg) {
     std::vector<size_t> depths(cfg.successors.size(), 0);
-    std::unordered_map<size_t, std::unordered_set<size_t>> loops;
-    for (size_t tail = 0; tail < cfg.successors.size(); ++tail) {
-        if (tail >= cfg.reachable.size() || !cfg.reachable[tail]) {
-            continue;
-        }
-        for (size_t header: cfg.successors[tail]) {
-            if (!cfg.dominates(header, tail)) {
-                continue;
-            }
-            auto &loop = loops[header];
-            loop.insert(header);
-            loop.insert(tail);
-            std::vector<size_t> work{tail};
-            while (!work.empty()) {
-                const size_t block = work.back();
-                work.pop_back();
-                for (size_t predecessor: cfg.predecessors[block]) {
-                    if (loop.insert(predecessor).second && predecessor != header) {
-                        work.push_back(predecessor);
-                    }
-                }
-            }
-        }
-    }
+    const auto loops = findNaturalLoopsImpl(cfg, true);
     for (const auto &[header, loop]: loops) {
         (void) header;
         for (size_t block: loop) {
@@ -412,31 +417,6 @@ bool verifySSA(const Function &function, std::string *reason) {
         }
     }
     return true;
-}
-
-std::optional<int> definedTemp(const Inst &inst) {
-    if (!inst.definesTemp()) {
-        return std::nullopt;
-    }
-    const auto *temp = dynamic_cast<const Temp *>(inst.res.get());
-    if (!temp || temp->id < 0) {
-        return std::nullopt;
-    }
-    return temp->id;
-}
-
-TempSet usedTemps(const Inst &inst) {
-    TempSet result;
-    for (const auto &operand: inst.operands()) {
-        if (operand.role == OperandRole::Definition || !operand.value) {
-            continue;
-        }
-        const auto *temp = dynamic_cast<const Temp *>(operand.value);
-        if (temp && temp->id >= 0) {
-            result.insert(temp->id);
-        }
-    }
-    return result;
 }
 
 TempLiveness analyzeTempLiveness(const Function &function, const ControlFlowGraph &cfg) {

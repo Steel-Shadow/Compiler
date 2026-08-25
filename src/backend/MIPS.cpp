@@ -65,6 +65,7 @@ bool eliminateRedundantInstructions();
 bool batchRepeatedHalving();
 bool batchOddSuccessorHalving();
 bool memoizeBoundedTailRecurrences(const IR::Module &module);
+bool eliminateUnusedCalleeSavedRoundTrips(const IR::Module &module);
 
 bool isComparison(IR::Op op) {
     return op == IR::Op::Leq || op == IR::Op::Lss || op == IR::Op::Geq
@@ -120,6 +121,7 @@ private:
         MIPS::output("#### MIPS ####");
         MIPS::output(".data");
         for (auto &[name, globVar]: module.getGlobVars()) {
+            MIPS::output(".align 2");
             std::string dataLine = name + (globVar.type == Type::Char ? ": .byte " : ": .word ");
             for (size_t i = 0; i < globVar.initVal.size(); ++i) {
                 if (i != 0) {
@@ -181,12 +183,9 @@ private:
             bool nestedCall = false;
             for (size_t index = frameStart + 1; index < call; ++index) {
                 nestedCall = nestedCall || instructions[index].op == IR::Op::Call;
-                if (instructions[index].op == IR::Op::PushParam) {
+                if (instructions[index].op == IR::Op::PushParam
+                    || instructions[index].op == IR::Op::PushAddressParam) {
                     pushes.push_back(index);
-                } else if (instructions[index].op == IR::Op::PushAddressParam) {
-                    pushes.clear();
-                    nestedCall = true;
-                    break;
                 }
             }
             if (nestedCall || pushes.size() != function->second) {
@@ -228,6 +227,12 @@ private:
                 const auto &inst = basicBlock->instructions[index];
                 auto argument = registerArguments.find(index);
                 if (argument != registerArguments.end()) {
+                    if (inst.op == IR::Op::PushAddressParam) {
+                        MIPS::beginInstruction(inst);
+                        MIPS::MoveAddressToRegister(inst, argument->second);
+                        MIPS::endInstruction();
+                        continue;
+                    }
                     const auto *value = dynamic_cast<const IR::Temp *>(inst.arg1.get());
                     if (value) {
                         MIPS::beginInstruction(inst);
@@ -402,6 +407,7 @@ private:
         while (allMergeLi_Move()) {}
         while (allMergeLi_R()) {}
         while (eliminateRedundantInstructions()) {}
+        eliminateUnusedCalleeSavedRoundTrips(module);
     }
 
     static void outputText() {
@@ -481,6 +487,7 @@ bool writesReg(const R_Inst &inst, Register reg) {
         case Op::mfhi:
         case Op::and_:
         case Op::or_:
+        case Op::xor_:
         case Op::add:
         case Op::slt:
         case Op::sle:
@@ -492,6 +499,8 @@ bool writesReg(const R_Inst &inst, Register reg) {
         case Op::srav:
         case Op::clz:
             return inst.rd == reg;
+        case Op::mult:
+            return false;
         case Op::syscall:
             return reg == Register::v0;
         default:
@@ -596,6 +605,74 @@ bool writesReg(const Assembly *assembly, Register reg) {
         return inst->op == Op::jal && reg == Register::ra;
     }
     return false;
+}
+
+bool isCalleeSavedRoundTrip(const Assembly *assembly, Register reg) {
+    const auto *inst = dynamic_cast<const I_imm_Inst *>(assembly);
+    return inst && (inst->op == Op::sw || inst->op == Op::lw)
+           && inst->rt == reg && inst->rs == Register::sp
+           && inst->immediate == -variableSaveOffset(reg);
+}
+
+bool eliminateUnusedCalleeSavedRoundTrips(const IR::Module &module) {
+    std::unordered_set<std::string> functionNames{module.getMainFunction().getName()};
+    for (const auto &function: module.getFunctions()) {
+        functionNames.insert(function->getName());
+    }
+
+    std::vector<size_t> starts;
+    for (size_t index = 0; index < assemblies.size(); ++index) {
+        const auto *label = dynamic_cast<const Label *>(assemblies[index].get());
+        if (label && functionNames.find(label->nameAndId) != functionNames.end()) {
+            starts.push_back(index);
+        }
+    }
+    if (starts.empty()) {
+        return false;
+    }
+
+    std::unordered_set<size_t> remove;
+    for (size_t function = 0; function < starts.size(); ++function) {
+        const size_t begin = starts[function] + 1;
+        const size_t end = function + 1 < starts.size()
+                                   ? starts[function + 1]
+                                   : assemblies.size();
+        for (Register reg: {Register::s0, Register::s1, Register::s2, Register::s3,
+                            Register::s4, Register::s5, Register::s6, Register::s7}) {
+            bool used = false;
+            for (size_t index = begin; index < end; ++index) {
+                if (isCalleeSavedRoundTrip(assemblies[index].get(), reg)) {
+                    continue;
+                }
+                if (readsReg(assemblies[index].get(), reg)
+                    || writesReg(assemblies[index].get(), reg)) {
+                    used = true;
+                    break;
+                }
+            }
+            if (used) {
+                continue;
+            }
+            for (size_t index = begin; index < end; ++index) {
+                if (isCalleeSavedRoundTrip(assemblies[index].get(), reg)) {
+                    remove.insert(index);
+                }
+            }
+        }
+    }
+    if (remove.empty()) {
+        return false;
+    }
+
+    std::vector<std::unique_ptr<Assembly>> kept;
+    kept.reserve(assemblies.size() - remove.size());
+    for (size_t index = 0; index < assemblies.size(); ++index) {
+        if (remove.find(index) == remove.end()) {
+            kept.push_back(std::move(assemblies[index]));
+        }
+    }
+    assemblies = std::move(kept);
+    return true;
 }
 
 bool isControlBoundary(const Assembly *assembly) {
@@ -2537,6 +2614,9 @@ void MIPS::irToMips(const IR::Inst &inst) {
         case IR::Op::StoreDynamic:
             StoreDynamic(inst);
             break;
+        case IR::Op::MemZero:
+            MemZero(inst);
+            break;
         case IR::Op::Add:
             Add(inst);
             break;
@@ -2557,6 +2637,15 @@ void MIPS::irToMips(const IR::Inst &inst) {
             break;
         case IR::Op::Or:
             Or(inst);
+            break;
+        case IR::Op::Xor:
+            Xor(inst);
+            break;
+        case IR::Op::XorLimb:
+            XorLimb(inst);
+            break;
+        case IR::Op::AndLimb:
+            AndLimb(inst);
             break;
         case IR::Op::Neg:
             Neg(inst);

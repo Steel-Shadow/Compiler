@@ -1,6 +1,7 @@
 #include "middle/Optimize.h"
 
 #include "middle/Analysis.h"
+#include "middle/IRUtils.h"
 
 #include <algorithm>
 #include <functional>
@@ -12,10 +13,6 @@
 
 namespace IR {
 namespace {
-
-const Label *asLabel(const std::unique_ptr<Element> &element) {
-    return dynamic_cast<const Label *>(element.get());
-}
 
 bool hasHardTerminator(const BasicBlock &block) {
     return std::any_of(block.instructions.begin(), block.instructions.end(), [](const Inst &inst) {
@@ -84,32 +81,6 @@ bool isJumpOnly(const BasicBlock &block, std::string &target) {
     }
     target = label->nameAndId;
     return true;
-}
-
-std::unordered_map<size_t, std::unordered_set<size_t>> naturalLoops(
-        const ControlFlowGraph &cfg) {
-    std::unordered_map<size_t, std::unordered_set<size_t>> loops;
-    for (size_t tail = 0; tail < cfg.successors.size(); ++tail) {
-        for (size_t header: cfg.successors[tail]) {
-            if (!cfg.dominates(header, tail)) {
-                continue;
-            }
-            auto &loop = loops[header];
-            loop.insert(header);
-            loop.insert(tail);
-            std::vector<size_t> work{tail};
-            while (!work.empty()) {
-                const size_t block = work.back();
-                work.pop_back();
-                for (size_t predecessor: cfg.predecessors[block]) {
-                    if (loop.insert(predecessor).second && predecessor != header) {
-                        work.push_back(predecessor);
-                    }
-                }
-            }
-        }
-    }
-    return loops;
 }
 
 } // namespace
@@ -238,7 +209,7 @@ bool simplifyControlFlow(Function &function) {
 
 bool canonicalizeLoops(Function &function) {
     const auto cfg = buildControlFlowGraph(function);
-    const auto loops = naturalLoops(cfg);
+    const auto loops = collectNaturalLoops(cfg);
     auto &blocks = function.getMutableBasicBlocks();
     for (const auto &[header, loop]: loops) {
         if (header == 0 || header >= blocks.size()) {
@@ -258,6 +229,49 @@ bool canonicalizeLoops(Function &function) {
         const std::string oldHeader = blocks[header]->label.nameAndId;
         auto preheader = std::make_unique<BasicBlock>(oldHeader + "_preheader");
         const Label preheaderLabel = preheader->label;
+
+        std::unordered_set<std::string> outsideLabels;
+        for (size_t predecessor: outside) {
+            outsideLabels.insert(blocks[predecessor]->label.nameAndId);
+        }
+        int tempId = nextTempId(function);
+        for (auto &phi: blocks[header]->instructions) {
+            if (phi.op != Op::Phi) {
+                break;
+            }
+            std::vector<size_t> outsideIncoming;
+            for (size_t index = 0; index < phi.phiIncoming.size(); ++index) {
+                if (outsideLabels.count(phi.phiIncoming[index].predecessor) != 0) {
+                    outsideIncoming.push_back(index);
+                }
+            }
+            if (outsideIncoming.size() == 1) {
+                phi.phiIncoming[outsideIncoming.front()].predecessor =
+                        preheaderLabel.nameAndId;
+                continue;
+            }
+            const auto *result = dynamic_cast<const Temp *>(phi.res.get());
+            if (outsideIncoming.empty() || !result) {
+                continue;
+            }
+
+            const Temp merged(tempId++, result->type);
+            Inst preheaderPhi(Op::Phi, merged.clone(), nullptr, nullptr);
+            for (size_t index: outsideIncoming) {
+                preheaderPhi.addPhiIncoming(
+                        phi.phiIncoming[index].predecessor,
+                        phi.phiIncoming[index].value->clone());
+            }
+            phi.phiIncoming.erase(
+                    std::remove_if(
+                            phi.phiIncoming.begin(), phi.phiIncoming.end(),
+                            [&](const PhiIncoming &incoming) {
+                                return outsideLabels.count(incoming.predecessor) != 0;
+                            }),
+                    phi.phiIncoming.end());
+            phi.addPhiIncoming(preheaderLabel.nameAndId, merged.clone());
+            preheader->instructions.push_back(std::move(preheaderPhi));
+        }
         preheader->instructions.emplace_back(
                 Op::Br, nullptr, blocks[header]->label.clone(), nullptr);
 

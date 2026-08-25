@@ -1,74 +1,15 @@
 #include "middle/Optimize.h"
 
 #include "middle/Analysis.h"
+#include "middle/IRUtils.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <optional>
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 namespace IR {
 namespace {
-
-struct Definition {
-    size_t block{};
-    size_t instruction{};
-};
-
-int nextTempId(const Function &function) {
-    int next = 0;
-    for (const auto &block: function.getBasicBlocks()) {
-        for (const auto &inst: block->instructions) {
-            for (const auto &operand: inst.operands()) {
-                const auto *temp = dynamic_cast<const Temp *>(operand.value);
-                if (temp && temp->id >= next) {
-                    next = temp->id + 1;
-                }
-            }
-        }
-    }
-    return next;
-}
-
-std::unordered_map<size_t, std::unordered_set<size_t>> naturalLoops(
-        const ControlFlowGraph &cfg) {
-    std::unordered_map<size_t, std::unordered_set<size_t>> loops;
-    for (size_t latch = 0; latch < cfg.successors.size(); ++latch) {
-        for (size_t header: cfg.successors[latch]) {
-            if (!cfg.dominates(header, latch)) {
-                continue;
-            }
-            auto &loop = loops[header];
-            loop.insert(header);
-            loop.insert(latch);
-            std::vector<size_t> work{latch};
-            while (!work.empty()) {
-                const size_t block = work.back();
-                work.pop_back();
-                for (size_t predecessor: cfg.predecessors[block]) {
-                    if (loop.insert(predecessor).second && predecessor != header) {
-                        work.push_back(predecessor);
-                    }
-                }
-            }
-        }
-    }
-    return loops;
-}
-
-std::optional<int> knownConstant(
-        const Element *element,
-        const std::unordered_map<int, int> &constants) {
-    if (const auto *constant = dynamic_cast<const ConstVal *>(element)) {
-        return constant->value;
-    }
-    const auto *temp = dynamic_cast<const Temp *>(element);
-    auto value = temp ? constants.find(temp->id) : constants.end();
-    return value == constants.end() ? std::nullopt
-                                    : std::optional<int>(value->second);
-}
 
 bool isPowerOfTwoMagnitude(int value) {
     const uint32_t magnitude = value < 0
@@ -77,44 +18,18 @@ bool isPowerOfTwoMagnitude(int value) {
     return magnitude != 0 && (magnitude & (magnitude - 1)) == 0;
 }
 
-int wrappingMultiply(int lhs, int rhs) {
-    return static_cast<int32_t>(static_cast<uint32_t>(lhs)
-                                * static_cast<uint32_t>(rhs));
-}
-
-bool sameTemp(const Element *element, int id) {
-    const auto *temp = dynamic_cast<const Temp *>(element);
-    return temp && temp->id == id;
-}
-
 } // namespace
 
 bool reduceInductionVariableStrength(Function &function) {
     const auto cfg = buildControlFlowGraph(function);
-    const auto loops = naturalLoops(cfg);
+    const auto loops = collectNaturalLoops(cfg);
     if (loops.empty()) {
         return false;
     }
 
-    std::unordered_map<int, Definition> definitions;
-    std::unordered_map<int, int> constants;
+    const auto definitions = collectTempDefinitions(function);
+    const auto constants = collectImmediateConstants(function);
     const auto &blocks = function.getBasicBlocks();
-    for (size_t block = 0; block < blocks.size(); ++block) {
-        for (size_t index = 0; index < blocks[block]->instructions.size(); ++index) {
-            const auto &inst = blocks[block]->instructions[index];
-            auto definition = definedTemp(inst);
-            if (!definition) {
-                continue;
-            }
-            definitions[*definition] = {block, index};
-            const auto *constant = inst.op == Op::LoadImd
-                                           ? dynamic_cast<const ConstVal *>(inst.arg1.get())
-                                           : nullptr;
-            if (constant) {
-                constants[*definition] = constant->value;
-            }
-        }
-    }
 
     for (const auto &[header, loop]: loops) {
         std::vector<size_t> outsidePredecessors;
@@ -161,12 +76,12 @@ bool reduceInductionVariableStrength(Function &function) {
             std::optional<int> step;
             if (update.op == Op::Add) {
                 if (sameTemp(update.arg1.get(), induction->id)) {
-                    step = knownConstant(update.arg2.get(), constants);
+                    step = constantValue(update.arg2.get(), constants);
                 } else if (sameTemp(update.arg2.get(), induction->id)) {
-                    step = knownConstant(update.arg1.get(), constants);
+                    step = constantValue(update.arg1.get(), constants);
                 }
             } else if (update.op == Op::Sub && sameTemp(update.arg1.get(), induction->id)) {
-                auto magnitude = knownConstant(update.arg2.get(), constants);
+                auto magnitude = constantValue(update.arg2.get(), constants);
                 if (magnitude) {
                     step = static_cast<int32_t>(0U - static_cast<uint32_t>(*magnitude));
                 }
@@ -188,10 +103,10 @@ bool reduceInductionVariableStrength(Function &function) {
                     std::optional<int> factor;
                     if (candidate.op == Op::Mul || candidate.op == Op::MulImd) {
                         if (sameTemp(candidate.arg1.get(), induction->id)) {
-                            factor = knownConstant(candidate.arg2.get(), constants);
+                            factor = constantValue(candidate.arg2.get(), constants);
                         } else if (candidate.op == Op::Mul
                                    && sameTemp(candidate.arg2.get(), induction->id)) {
-                            factor = knownConstant(candidate.arg1.get(), constants);
+                            factor = constantValue(candidate.arg1.get(), constants);
                         }
                     }
                     if (!factor || *factor == 0 || *factor == 1 || *factor == -1
@@ -204,7 +119,7 @@ bool reduceInductionVariableStrength(Function &function) {
                     const Temp strideProduct(nextId + 1, Type::Int);
                     const Temp derivedPhi(nextId + 2, Type::Int);
                     const Temp derivedNext(nextId + 3, Type::Int);
-                    const auto initialConstant = knownConstant(initial, constants);
+                    const auto initialConstant = constantValue(initial, constants);
                     auto initialValue = initial->clone();
 
                     function.replaceAllUsesWith(*product, derivedPhi);

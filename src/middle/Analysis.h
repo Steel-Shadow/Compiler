@@ -1,7 +1,7 @@
 #ifndef COMPILER_MIDDLE_ANALYSIS_H
 #define COMPILER_MIDDLE_ANALYSIS_H
 
-#include "middle/IR.h"
+#include "middle/IRUtils.h"
 
 #include <cstddef>
 #include <optional>
@@ -28,7 +28,8 @@ struct ControlFlowGraph {
     bool dominates(size_t dominator, size_t block) const;
 };
 
-using TempSet = std::unordered_set<int>;
+using NaturalLoop = std::unordered_set<size_t>;
+using NaturalLoops = std::unordered_map<size_t, NaturalLoop>;
 
 struct TempLiveness {
     std::vector<TempSet> liveIn;
@@ -46,13 +47,12 @@ struct VariableLiveness {
 };
 
 ControlFlowGraph buildControlFlowGraph(const Function &function);
+NaturalLoops collectNaturalLoops(const ControlFlowGraph &cfg);
 std::vector<size_t> computeLoopDepths(const ControlFlowGraph &cfg);
 
 // Checks the structural and dominance invariants expected by SSA-only passes.
 bool verifySSA(const Function &function, std::string *reason = nullptr);
 
-std::optional<int> definedTemp(const Inst &inst);
-TempSet usedTemps(const Inst &inst);
 TempLiveness analyzeTempLiveness(const Function &function, const ControlFlowGraph &cfg);
 
 bool isRegisterCandidate(const Var &var);

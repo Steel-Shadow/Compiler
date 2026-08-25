@@ -9,8 +9,10 @@ __pycache__/
 *.pyc
 
 cmake-build-*/
+build-debug/
 build/
 dist/
 InstructionStatistics.txt
-test/vendor/
-test/work/
+/test/
+
+.VSCodeCounter/

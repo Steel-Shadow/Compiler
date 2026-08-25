@@ -140,8 +140,22 @@ std::unordered_map<int, int> colorTempGraph(
         const std::unordered_map<int, int> &weights,
         const std::vector<Register> &registers,
         const IR::TempSet &liveAcrossCalls,
-        const MoveAffinity &affinities) {
+        const MoveAffinity &affinities,
+        const std::unordered_set<int> &forcedSpills = {}) {
     TempGraph graph = original;
+    for (int spilled: forcedSpills) {
+        auto node = graph.find(spilled);
+        if (node == graph.end()) {
+            continue;
+        }
+        for (int neighbor: node->second) {
+            auto other = graph.find(neighbor);
+            if (other != graph.end()) {
+                other->second.erase(spilled);
+            }
+        }
+        graph.erase(node);
+    }
     std::vector<int> stack;
     stack.reserve(graph.size());
     const int colorCount = static_cast<int>(registers.size());
@@ -362,10 +376,7 @@ bool isTemporaryRegister(Register reg) {
 }
 
 bool isRegisterArgumentCandidate(const IR::Function &function) {
-    if (function.getParams().size() > 4
-        || std::any_of(function.getParams().begin(), function.getParams().end(), [](const ParamInfo &param) {
-               return !param.dims.empty();
-           })) {
+    if (function.getParams().size() > 4) {
         return false;
     }
     return std::none_of(function.getBasicBlocks().begin(), function.getBasicBlocks().end(), [](const auto &block) {
@@ -401,11 +412,11 @@ bool callCanPassArgumentsDirectly(const IR::BasicBlock &block,
 
     size_t pushes = 0;
     for (size_t index = frameStart + 1; index < callIndex; ++index) {
-        if (instructions[index].op == IR::Op::Call
-            || instructions[index].op == IR::Op::PushAddressParam) {
+        if (instructions[index].op == IR::Op::Call) {
             return false;
         }
-        if (instructions[index].op == IR::Op::PushParam) {
+        if (instructions[index].op == IR::Op::PushParam
+            || instructions[index].op == IR::Op::PushAddressParam) {
             ++pushes;
         }
     }
@@ -509,7 +520,9 @@ void MIPS::prepareRegisterAllocation(const IR::Function &function) {
     if (usesRegisterArguments(function)) {
         for (size_t index = 0; index < function.getParams().size(); ++index) {
             const auto &param = function.getParams()[index];
-            allocatedVarRegs[IR::Var(param.name, 1, false, param.dims, param.type, false)] =
+            allocatedVarRegs[IR::Var(
+                    param.name, 1, false, param.dims, param.type,
+                    !param.dims.empty())] =
                     argumentRegister(index);
         }
     }
@@ -522,8 +535,13 @@ void MIPS::prepareRegisterAllocation(const IR::Function &function) {
         }
     }
     std::vector<Register> allocatableRegisters = {
-            Register::t0, Register::t1, Register::t2, Register::t3,
-            Register::t4, Register::t5, Register::t6,
+            Register::t0,
+            Register::t1,
+            Register::t2,
+            Register::t3,
+            Register::t4,
+            Register::t5,
+            Register::t6,
     };
     for (Register reg: {Register::s0, Register::s1, Register::s2, Register::s3,
                         Register::s4, Register::s5, Register::s6, Register::s7}) {
@@ -552,8 +570,50 @@ void MIPS::prepareRegisterAllocation(const IR::Function &function) {
     MoveAffinity affinities;
     const auto tempGraph = buildTempInterference(
             function, tempLiveness, loopDepth, tempWeights, affinities);
-    const auto tempColors = colorTempGraph(
+    for (const auto &[temp, value]: rematerializedConstants) {
+        (void) value;
+        tempWeights[temp] = 0;
+    }
+    auto tempColors = colorTempGraph(
             tempGraph, tempWeights, allocatableRegisters, liveAcrossCalls, affinities);
+    const auto estimatedSpillCost = [&](const std::unordered_map<int, int> &colors) {
+        long long cost = 0;
+        for (const auto &[temp, neighbors]: tempGraph) {
+            (void) neighbors;
+            const bool forcedAcrossCall = liveAcrossCalls.find(temp) != liveAcrossCalls.end()
+                                          && rematerializedConstants.find(temp)
+                                                     != rematerializedConstants.end();
+            if (colors.find(temp) != colors.end() && !forcedAcrossCall) {
+                continue;
+            }
+            const long long weight = tempWeights.count(temp) != 0
+                                             ? tempWeights.at(temp)
+                                             : 1;
+            cost += rematerializedConstants.find(temp) != rematerializedConstants.end()
+                            ? weight
+                            : 2 * weight;
+        }
+        return cost;
+    };
+    const bool spillsComputedValue = std::any_of(
+            tempGraph.begin(), tempGraph.end(), [&](const auto &node) {
+                return tempColors.find(node.first) == tempColors.end()
+                       && rematerializedConstants.find(node.first)
+                                  == rematerializedConstants.end();
+            });
+    if (spillsComputedValue && !rematerializedConstants.empty()) {
+        std::unordered_set<int> rematerialized;
+        for (const auto &[temp, value]: rematerializedConstants) {
+            (void) value;
+            rematerialized.insert(temp);
+        }
+        auto alternative = colorTempGraph(
+                tempGraph, tempWeights, allocatableRegisters,
+                liveAcrossCalls, affinities, rematerialized);
+        if (estimatedSpillCost(alternative) < estimatedSpillCost(tempColors)) {
+            tempColors = std::move(alternative);
+        }
+    }
     for (const auto &[temp, neighbors]: tempGraph) {
         (void) neighbors;
         auto color = tempColors.find(temp);
@@ -682,7 +742,8 @@ void MIPS::prepareRegisterAllocation(const IR::Function &function) {
             const auto &store = instructions[storeIndex];
             const auto *temp = dynamic_cast<const IR::Temp *>(store.res.get());
             const auto *var = dynamic_cast<const IR::Var *>(store.arg1.get());
-            if (store.op != IR::Op::Store || !temp || temp->id < 0 || !var
+            if (store.op != IR::Op::Store || store.arg2 || !temp || temp->id < 0 || !var
+                || var->storesAddress
                 || useCounts[temp->id] != 1 || allocatedVarRegs.find(*var) == allocatedVarRegs.end()) {
                 continue;
             }

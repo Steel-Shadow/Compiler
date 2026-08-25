@@ -114,6 +114,26 @@ bool evaluateBinary(Op op, int lhs, int rhs, int &result) {
         case Op::Or:
             result = lhs | rhs;
             return true;
+        case Op::Xor:
+            result = lhs ^ rhs;
+            return true;
+        case Op::XorLimb: {
+            const std::uint32_t lhsMagnitude = lhs < 0
+                                                       ? 0U - static_cast<std::uint32_t>(lhs)
+                                                       : static_cast<std::uint32_t>(lhs);
+            const std::uint32_t rhsMagnitude = rhs < 0
+                                                       ? 0U - static_cast<std::uint32_t>(rhs)
+                                                       : static_cast<std::uint32_t>(rhs);
+            result = static_cast<int>(
+                    (((lhs < 0) == (rhs < 0)
+                              ? lhsMagnitude ^ rhsMagnitude
+                              : lhsMagnitude | rhsMagnitude)
+                     & 65535U));
+            return true;
+        }
+        case Op::AndLimb:
+            result = lhs >= 0 && rhs >= 0 ? (lhs & rhs & 65535) : 0;
+            return true;
         case Op::Leq:
             result = lhs <= rhs;
             return true;
@@ -193,6 +213,9 @@ LatticeValue evaluateInstruction(
         case Op::Mod:
         case Op::And:
         case Op::Or:
+        case Op::Xor:
+        case Op::XorLimb:
+        case Op::AndLimb:
         case Op::Leq:
         case Op::Lss:
         case Op::Geq:
@@ -279,7 +302,7 @@ bool sparseConditionalConstantPropagation(Function &function) {
                     }
                     const bool mayTake = condition.kind == LatticeKind::Overdefined
                                          || (inst.op == Op::Bif1 ? condition.value != 0
-                                                                : condition.value == 0);
+                                                                 : condition.value == 0);
                     const bool mayFallThrough = condition.kind == LatticeKind::Overdefined
                                                 || !mayTake;
                     if (mayTake && targetBlock != labels.end()) {
@@ -323,7 +346,7 @@ bool sparseConditionalConstantPropagation(Function &function) {
                 const LatticeValue condition = valueOf(inst.arg1.get(), values);
                 if (condition.kind == LatticeKind::Constant) {
                     const bool taken = inst.op == Op::Bif1 ? condition.value != 0
-                                                          : condition.value == 0;
+                                                           : condition.value == 0;
                     if (taken) {
                         inst = Inst(Op::Br, nullptr, inst.arg2 ? inst.arg2->clone() : nullptr, nullptr);
                         ++index;

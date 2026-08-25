@@ -4,15 +4,18 @@
 #include "IR.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <iostream>
 #include <queue>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include "config.h"
 #include "errorHandler/Error.h"
 #include "middle/Analysis.h"
+#include "middle/IRUtils.h"
 #include "middle/Optimize.h"
 
 using namespace IR;
@@ -113,35 +116,12 @@ Type elementType(const Element *element, Type fallback = Type::Int) {
     return fallback;
 }
 
-const Temp *asTemp(const std::unique_ptr<Element> &element) {
-    return dynamic_cast<const Temp *>(element.get());
-}
-
 Temp *asMutableTemp(const std::unique_ptr<Element> &element) {
     return dynamic_cast<Temp *>(element.get());
 }
 
-const ConstVal *asConst(const std::unique_ptr<Element> &element) {
-    return dynamic_cast<const ConstVal *>(element.get());
-}
-
-const Label *asLabel(const std::unique_ptr<Element> &element) {
-    return dynamic_cast<const Label *>(element.get());
-}
-
-const Var *asVar(const std::unique_ptr<Element> &element) {
-    return dynamic_cast<const Var *>(element.get());
-}
-
 bool isPromotableScalarLocal(const Var &var) {
     return var.depth > 0 && var.dims.empty() && !var.storesAddress;
-}
-
-int normalizeForType(int value, Type type) {
-    if (type == Type::Char) {
-        return value & 0xFF;
-    }
-    return value;
 }
 
 bool getConstant(const Element *element,
@@ -192,6 +172,26 @@ bool evalBinary(Op op, int lhs, int rhs, int &out) {
         case Op::Or:
             out = lhs | rhs;
             return true;
+        case Op::Xor:
+            out = lhs ^ rhs;
+            return true;
+        case Op::XorLimb: {
+            const std::uint32_t lhsMagnitude = lhs < 0
+                                                       ? 0U - static_cast<std::uint32_t>(lhs)
+                                                       : static_cast<std::uint32_t>(lhs);
+            const std::uint32_t rhsMagnitude = rhs < 0
+                                                       ? 0U - static_cast<std::uint32_t>(rhs)
+                                                       : static_cast<std::uint32_t>(rhs);
+            out = static_cast<int>(
+                    (((lhs < 0) == (rhs < 0)
+                              ? lhsMagnitude ^ rhsMagnitude
+                              : lhsMagnitude | rhsMagnitude)
+                     & 65535U));
+            return true;
+        }
+        case Op::AndLimb:
+            out = lhs >= 0 && rhs >= 0 ? (lhs & rhs & 65535) : 0;
+            return true;
         case Op::Leq:
             out = lhs <= rhs;
             return true;
@@ -224,6 +224,9 @@ bool isBinaryInst(Op op) {
         case Op::Mod:
         case Op::And:
         case Op::Or:
+        case Op::Xor:
+        case Op::XorLimb:
+        case Op::AndLimb:
         case Op::Leq:
         case Op::Lss:
         case Op::Geq:
@@ -289,7 +292,7 @@ bool simplifyInst(Inst &inst, const std::unordered_map<int, ConstInfo> &constant
     const bool rhsConst = getConstant(inst.arg2.get(), constants, rhs);
 
     if (inst.op == Op::LoadImd) {
-        if (auto imm = asConst(inst.arg1)) {
+        if (auto imm = asConstant(inst.arg1)) {
             const int normalized = normalizeForType(imm->value, res->type);
             if (normalized != imm->value || imm->type != res->type) {
                 replaceWithLoadImm(inst, normalized, res->type);
@@ -375,6 +378,11 @@ bool simplifyInst(Inst &inst, const std::unordered_map<int, ConstInfo> &constant
                 replaceWithMove(inst, lhsTemp);
                 return true;
             }
+        } else if (inst.op == Op::Xor) {
+            if (rhsConst && rhs.value == 0 && lhsTemp) {
+                replaceWithMove(inst, lhsTemp);
+                return true;
+            }
             if (lhsConst && lhs.value == 0 && rhsTemp) {
                 replaceWithMove(inst, rhsTemp);
                 return true;
@@ -383,7 +391,7 @@ bool simplifyInst(Inst &inst, const std::unordered_map<int, ConstInfo> &constant
     }
 
     if (inst.op == Op::MulImd) {
-        auto imm = asConst(inst.arg2);
+        auto imm = asConstant(inst.arg2);
         if (!imm) {
             return false;
         }
@@ -463,7 +471,8 @@ bool simplifyConstants(Function &function) {
                         memoryConstants.erase(*var);
                     }
                 }
-            } else if (inst.op == Op::StoreDynamic || inst.op == Op::Call || inst.op == Op::GetString
+            } else if (inst.op == Op::StoreDynamic || inst.op == Op::MemZero
+                       || inst.op == Op::Call || inst.op == Op::GetString
                        || inst.op == Op::InStack || inst.op == Op::OutStack) {
                 memoryConstants.clear();
             }
@@ -597,11 +606,15 @@ struct VarUseInfo {
     bool hasReadOrAddressUse{false};
 };
 
+bool isOwnedLocalMemory(const Var &var) {
+    return var.depth > 0 && !var.storesAddress;
+}
+
 void markVarUse(const std::unique_ptr<Element> &element,
                 std::unordered_map<Var, VarUseInfo> &uses,
                 bool readOrAddressUse) {
     auto var = asVar(element);
-    if (!var || !isPromotableScalarLocal(*var)) {
+    if (!var || !isOwnedLocalMemory(*var)) {
         return;
     }
     auto &info = uses[*var];
@@ -609,7 +622,7 @@ void markVarUse(const std::unique_ptr<Element> &element,
     info.hasReadOrAddressUse = info.hasReadOrAddressUse || readOrAddressUse;
 }
 
-std::unordered_map<Var, VarUseInfo> collectScalarVarUses(const Function &function) {
+std::unordered_map<Var, VarUseInfo> collectLocalMemoryUses(const Function &function) {
     std::unordered_map<Var, VarUseInfo> uses;
     for (const auto &block: function.getBasicBlocks()) {
         for (const auto &inst: block->instructions) {
@@ -617,13 +630,14 @@ std::unordered_map<Var, VarUseInfo> collectScalarVarUses(const Function &functio
                 case Op::Alloca:
                     break;
                 case Op::Store:
+                case Op::StoreDynamic:
+                case Op::MemZero:
                     markVarUse(inst.arg1, uses, false);
                     break;
                 case Op::Load:
+                case Op::LoadDynamic:
                     markVarUse(inst.arg1, uses, true);
                     break;
-                case Op::StoreDynamic:
-                case Op::LoadDynamic:
                 case Op::PushAddressParam:
                 case Op::PrintStr:
                 case Op::GetString:
@@ -640,13 +654,15 @@ std::unordered_map<Var, VarUseInfo> collectScalarVarUses(const Function &functio
 bool cleanupScalarMemory(Function &function) {
     bool changed = false;
 
-    auto uses = collectScalarVarUses(function);
+    auto uses = collectLocalMemoryUses(function);
     for (auto &block: function.getMutableBasicBlocks()) {
         auto &instructions = block->instructions;
         for (size_t i = 0; i < instructions.size();) {
             auto &inst = instructions[i];
             auto *var = asVar(inst.arg1);
-            if (inst.op == Op::Store && var && isPromotableScalarLocal(*var)
+            if ((inst.op == Op::Store || inst.op == Op::StoreDynamic
+                 || inst.op == Op::MemZero)
+                && var && isOwnedLocalMemory(*var)
                 && !uses[*var].hasReadOrAddressUse) {
                 instructions.erase(instructions.begin() + static_cast<long>(i));
                 changed = true;
@@ -657,14 +673,14 @@ bool cleanupScalarMemory(Function &function) {
     }
 
     if (changed) {
-        uses = collectScalarVarUses(function);
+        uses = collectLocalMemoryUses(function);
     }
     for (auto &block: function.getMutableBasicBlocks()) {
         auto &instructions = block->instructions;
         for (size_t i = 0; i < instructions.size();) {
             auto &inst = instructions[i];
             auto *var = asVar(inst.arg1);
-            if (inst.op == Op::Alloca && var && isPromotableScalarLocal(*var)
+            if (inst.op == Op::Alloca && var && isOwnedLocalMemory(*var)
                 && !uses[*var].hasAnyUse) {
                 instructions.erase(instructions.begin() + static_cast<long>(i));
                 changed = true;
@@ -679,30 +695,102 @@ bool cleanupScalarMemory(Function &function) {
 
 bool propagateConstantGlobals(
         Function &function,
-        const std::vector<std::pair<std::string, GlobVar>> &globals) {
-    std::unordered_map<std::string, ConstInfo> constants;
+        const std::vector<std::pair<std::string, GlobVar>> &globals,
+        const std::unordered_set<std::string> &readOnlyGlobals) {
+    std::unordered_map<std::string, const GlobVar *> constants;
     for (const auto &[name, global]: globals) {
-        if (global.cons && global.dims.empty() && !global.initVal.empty()) {
-            constants.emplace(name, ConstInfo{global.initVal.front(), global.type});
+        if ((global.cons || readOnlyGlobals.count(name) != 0)
+            && !global.initVal.empty()) {
+            constants.emplace(name, &global);
         }
+    }
+
+    std::unordered_map<int, ConstInfo> knownConstants;
+    bool discovered = true;
+    while (discovered) {
+        const size_t previousSize = knownConstants.size();
+        for (const auto &block: function.getBasicBlocks()) {
+            for (const auto &inst: block->instructions) {
+                updateKnownConstant(inst, knownConstants);
+            }
+        }
+        discovered = knownConstants.size() != previousSize;
     }
 
     bool changed = false;
     for (auto &block: function.getMutableBasicBlocks()) {
         for (auto &inst: block->instructions) {
             const auto *var = asVar(inst.arg1);
-            if (inst.op != Op::Load || !var || var->depth != 0 || inst.arg2) {
+            const auto *result = asTemp(inst.res);
+            if ((inst.op != Op::Load && inst.op != Op::LoadDynamic)
+                || !var || var->depth != 0 || !result) {
                 continue;
             }
             auto constant = constants.find(var->name);
             if (constant == constants.end()) {
                 continue;
             }
-            replaceWithLoadImm(inst, constant->second.value, constant->second.type);
+
+            int index = 0;
+            if (inst.arg2) {
+                ConstInfo offset{};
+                if (!getConstant(inst.arg2.get(), knownConstants, offset)) {
+                    continue;
+                }
+                index = offset.value;
+                if (inst.op == Op::LoadDynamic) {
+                    const int elementSize = sizeOfType(ptrToValue(constant->second->type));
+                    if (elementSize <= 0 || index % elementSize != 0) {
+                        continue;
+                    }
+                    index /= elementSize;
+                }
+            }
+            if (index < 0
+                || static_cast<size_t>(index) >= constant->second->initVal.size()) {
+                continue;
+            }
+            replaceWithLoadImm(
+                    inst, constant->second->initVal[static_cast<size_t>(index)], result->type);
             changed = true;
         }
     }
     return changed;
+}
+
+std::unordered_set<std::string> findReadOnlyGlobals(
+        const std::vector<std::pair<std::string, GlobVar>> &globals,
+        const Function *mainFunction,
+        const std::vector<std::unique_ptr<Function>> &functions) {
+    std::unordered_set<std::string> readOnly;
+    for (const auto &[name, global]: globals) {
+        (void) global;
+        readOnly.insert(name);
+    }
+
+    auto inspect = [&](const Function &function) {
+        for (const auto &block: function.getBasicBlocks()) {
+            for (const auto &inst: block->instructions) {
+                if (inst.op != Op::Store && inst.op != Op::StoreDynamic
+                    && inst.op != Op::MemZero
+                    && inst.op != Op::GetString
+                    && inst.op != Op::PushAddressParam) {
+                    continue;
+                }
+                const auto *var = asVar(inst.arg1);
+                if (var && var->depth == 0) {
+                    readOnly.erase(var->name);
+                }
+            }
+        }
+    };
+    if (mainFunction) {
+        inspect(*mainFunction);
+    }
+    for (const auto &function: functions) {
+        inspect(*function);
+    }
+    return readOnly;
 }
 
 bool poolEntryConstants(Function &function) {
@@ -717,7 +805,7 @@ bool poolEntryConstants(Function &function) {
     for (size_t index = 0; index < instructions.size();) {
         auto &inst = instructions[index];
         const auto *result = asTemp(inst.res);
-        const auto *constant = asConst(inst.arg1);
+        const auto *constant = asConstant(inst.arg1);
         if (inst.op != Op::LoadImd || !result || result->id < 0 || !constant) {
             ++index;
             continue;
@@ -795,6 +883,20 @@ class InductionStrengthReductionPass final : public FunctionPass {
 public:
     bool run(Function &function) override {
         return reduceInductionVariableStrength(function);
+    }
+};
+
+class ClosedFormLoopPass final : public FunctionPass {
+public:
+    bool run(Function &function) override {
+        return simplifyClosedFormLoops(function);
+    }
+};
+
+class ModularArithmeticPass final : public FunctionPass {
+public:
+    bool run(Function &function) override {
+        return optimizeModularArithmetic(function);
     }
 };
 
@@ -1045,6 +1147,10 @@ std::vector<OperandRef> Inst::operands() const {
             add(OperandRole::Address, 1, arg1);
             add(OperandRole::Offset, 2, arg2);
             break;
+        case Op::MemZero:
+            add(OperandRole::Address, 1, arg1);
+            add(OperandRole::Size, 2, arg2);
+            break;
         case Op::Load:
         case Op::LoadPtr:
         case Op::LoadDynamic:
@@ -1059,6 +1165,9 @@ std::vector<OperandRef> Inst::operands() const {
         case Op::Mod:
         case Op::And:
         case Op::Or:
+        case Op::Xor:
+        case Op::XorLimb:
+        case Op::AndLimb:
         case Op::Leq:
         case Op::Lss:
         case Op::Geq:
@@ -1206,6 +1315,9 @@ std::string Inst::toLLVMString() const {
             return "store " + valueLLVMType(elementType(res.get())) + " " + resName
                    + ", ptr " + arg1Name
                    + (arg2 ? ", i32 " + arg2Name : "");
+        case Op::MemZero:
+            return "call void @llvm.memset.zero(ptr " + arg1Name
+                   + ", i32 " + arg2Name + ")";
         case Op::Load:
         case Op::LoadDynamic:
             return resName + " = load " + resType
@@ -1229,6 +1341,12 @@ std::string Inst::toLLVMString() const {
             return resName + " = and " + resType + " " + arg1Name + ", " + arg2Name;
         case Op::Or:
             return resName + " = or " + resType + " " + arg1Name + ", " + arg2Name;
+        case Op::Xor:
+            return resName + " = xor " + resType + " " + arg1Name + ", " + arg2Name;
+        case Op::XorLimb:
+            return resName + " = xor.limb " + resType + " " + arg1Name + ", " + arg2Name;
+        case Op::AndLimb:
+            return resName + " = and.limb " + resType + " " + arg1Name + ", " + arg2Name;
         case Op::Leq:
             return resName + " = icmp sle " + arg1Type + " " + arg1Name + ", " + arg2Name;
         case Op::Lss:
@@ -1318,6 +1436,9 @@ bool Inst::definesTemp() const {
         case Op::Mod:
         case Op::And:
         case Op::Or:
+        case Op::Xor:
+        case Op::XorLimb:
+        case Op::AndLimb:
         case Op::Leq:
         case Op::Lss:
         case Op::Geq:
@@ -1366,6 +1487,7 @@ bool Inst::mayHaveSideEffects() const {
         case Op::Alloca:
         case Op::Store:
         case Op::StoreDynamic:
+        case Op::MemZero:
         case Op::GetInt:
         case Op::GetChar:
         case Op::GetString:
@@ -1396,6 +1518,8 @@ std::string Inst::opToStr(Op anOperator) {
             return "Store";
         case Op::StoreDynamic:
             return "StoreDynamic";
+        case Op::MemZero:
+            return "MemZero";
         case Op::Add:
             return "Add";
         case Op::Sub:
@@ -1410,6 +1534,12 @@ std::string Inst::opToStr(Op anOperator) {
             return "And";
         case Op::Or:
             return "Or";
+        case Op::Xor:
+            return "Xor";
+        case Op::XorLimb:
+            return "XorLimb";
+        case Op::AndLimb:
+            return "AndLimb";
         case Op::Neg:
             return "Neg";
         case Op::LoadImd:
@@ -1639,6 +1769,8 @@ void Module::optimize() {
     for (int iteration = 0; iteration < 32 && inlineFunctions(*this); ++iteration) {
     }
     eliminateUnreachableFunctions(*this);
+    const auto readOnlyGlobals = findReadOnlyGlobals(
+            globVars, mainFunction.get(), functions);
 
     PassManager passManager;
     passManager.addPass<ReadOnlyGlobalLoadHoistingPass>();
@@ -1654,12 +1786,14 @@ void Module::optimize() {
     passManager.addPass<EntryConstantPoolingPass>();
     passManager.addPass<InductionStrengthReductionPass>();
     passManager.addPass<LoopInvariantCodeMotionPass>();
+    passManager.addPass<ClosedFormLoopPass>();
+    passManager.addPass<ModularArithmeticPass>();
     passManager.addPass<DeadStoreEliminationPass>();
     passManager.addPass<DeadCodeEliminationPass>();
     passManager.addPass<ScalarMemoryCleanupPass>();
 
     auto optimizeFunction = [&](Function &function) {
-        propagateConstantGlobals(function, globVars);
+        propagateConstantGlobals(function, globVars, readOnlyGlobals);
         cleanupAfterTerminators(function);
         removeUnreachableBlocks(function);
         eliminateTailRecursion(function);
@@ -1693,6 +1827,25 @@ void Module::optimize() {
     for (auto &function: functions) {
         optimizeFunction(*function);
     }
+
+    for (int iteration = 0; iteration < 16; ++iteration) {
+        bool changed = optimizeInterproceduralCalls(*this);
+        changed = inlineTrivialFunctions(*this) || changed;
+        changed = inlineLinearFunctions(*this) || changed;
+        changed = inlineLinearArrayFunctions(*this) || changed;
+        changed = specializeConstantArguments(*this) || changed;
+        if (!changed) {
+            break;
+        }
+        eliminateUnreachableFunctions(*this);
+        if (mainFunction) {
+            optimizeFunction(*mainFunction);
+        }
+        for (auto &function: functions) {
+            optimizeFunction(*function);
+        }
+    }
+    eliminateUnreachableFunctions(*this);
 }
 
 void Module::lowerPhiNodes() {

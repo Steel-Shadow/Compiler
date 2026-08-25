@@ -32,3 +32,8 @@ if (COMPILER_ENABLE_WARNINGS)
         target_compile_options(Compiler PRIVATE -Wall -Wextra -Wpedantic)
     endif ()
 endif ()
+
+if (NOT MSVC)
+    # The official judger allows 30 seconds for a clean two-job Release build.
+    target_compile_options(Compiler PRIVATE $<$<CONFIG:Release>:-O1>)
+endif ()

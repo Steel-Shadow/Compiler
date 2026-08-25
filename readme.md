@@ -56,7 +56,11 @@ src/
     lexer/          词法分析
     parser/         递归下降公共工具
     symTab/         符号表和类型系统
-  middle/           IR 数据结构和输出
+  middle/
+    IR.*            IR 数据模型、输出和优化管线
+    IRUtils.*       与具体 Pass 无关的值查询、定义表和常量工具
+    Analysis.*      CFG、支配关系、自然循环和活跃性分析
+    *Optimize.*     函数级及过程间优化 Pass
   backend/          MIPS 指令、寄存器、栈内存管理
   errorHandler/     错误记录和输出
 ```
@@ -258,15 +262,15 @@ struct Inst {
 
 主要 IR 指令包括：
 
-- 内存：`Alloca`、`Load`、`LoadPtr`、`LoadDynamic`、`Store`、`StoreDynamic`。
-- 算术与逻辑：`Add`、`Sub`、`Mul`、`Div`、`Mod`、`And`、`Or`、`Not`。
+- 内存：`Alloca`、`Load`、`LoadPtr`、`LoadDynamic`、`Store`、`StoreDynamic`、`MemZero`。
+- 算术与逻辑：`Add`、`Sub`、`Mul`、`Div`、`Mod`、`And`、`Or`、`Xor`、`Not`。
 - 比较：`Leq`、`Lss`、`Geq`、`Gre`、`Eql`、`Neq`。
 - SSA：`Parameter`、`Phi`；控制流：`Br`、`Bif0`、`Bif1`。
 - 调用：`Call`、`PushParam`、`PushAddressParam`、`Ret`、`RetMain`。
 - I/O：`GetInt`、`GetChar`、`GetString`、`PrintInt`、`PrintChar`、`PrintStr`。
 - 栈作用域：`InStack`、`OutStack`。
 
-IR 在进入 MIPS 后端前会运行 `Module::optimize()`。优化管线先执行尾递归消除，再使用 dominance frontier 插入 pruned phi、沿支配树重命名并完成 mem2reg；随后运行常量/复制传播、GVN-GCM、死存储/死代码删除和控制流清理。`Analysis.*` 提供 CFG、支配关系、dominance frontier、循环深度以及 Temp/局部标量活跃性分析，`Optimize.*` 与 `GVNGCM.cpp` 实现跨基本块优化。优化后的 SSA IR 输出到 `ir.txt`；进入 MIPS 后端前再拆分关键边并将 phi 降低为并行复制。
+IR 在进入 MIPS 后端前会运行 `Module::optimize()`。优化管线先执行受限内联和尾递归消除，再使用 dominance frontier 插入 pruned phi、沿支配树重命名并完成 mem2reg；随后迭代运行 SCCP、内存值转发、GVN-GCM/PRE、LICM、循环闭式化、过程间摘要优化以及死存储/死代码删除。`Analysis.*` 提供 CFG、支配关系、dominance frontier、循环深度以及 Temp/局部标量活跃性分析。优化后的 SSA IR 输出到 `ir.txt`；进入 MIPS 后端前再拆分关键边并将 phi 降低为并行复制。
 
 ### 作用域栈
 
@@ -353,7 +357,7 @@ IR 临时值使用 `$t` 寄存器：
 
 ### 函数调用
 
-至多四个标量参数的叶函数，在全部调用点都不存在嵌套调用或地址参数时使用 `$a0-$a3`。只要一个调用点不满足条件，该函数的所有调用点就统一回退到栈传参，避免调用方和被调方约定不一致。
+至多四个参数的叶函数，在全部调用点都能直接准备实参时使用 `$a0-$a3`；标量值和数组地址都可直传。只要一个调用点不满足条件，该函数的所有调用点就统一回退到栈传参，避免调用方和被调方约定不一致。
 
 调用过程：
 
@@ -391,36 +395,16 @@ b;
 
 ## 测试设计
 
-测试使用 `testcase-2026` 生成的测试集和 Mars 运行 MIPS 汇编。
+测试使用课程测试集和 Mars 运行 MIPS 汇编。测试脚本、私有样例、Mars jar、生成数据及运行结果均保存在本地 `test/` 目录；该目录整体由 `.gitignore` 排除，不随编译器源码提交。
 
-常用命令：
-
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-
-# 首次运行会克隆并生成 testcase-2026
-python3 test/run_testcase_2026.py --prepare
-
-# 全量前端/错误处理检查
-python3 test/run_testcase_2026.py --suite all
-
-# 运行 MIPS 并和 ans.txt 比对
-curl -L -o test/vendor/Mars-2024.jar https://github.com/Lord-Turmoil/Mars-for-BUAA/releases/download/v1.0.1/Mars-2024.jar
-python3 test/run_testcase_2026.py --mars-jar ./test/vendor/Mars-2024.jar
-```
-
-测试脚本流程：
+本地测试流程：
 
 1. 对正确用例编译源程序，要求 `error.txt` 为空。
-2. 若指定 `--mars-jar`，使用 Mars 运行 `mips.txt`，并比较输出和 `ans.txt`。
+2. 使用 Mars 运行 `mips.txt`，并比较输出和 `ans.txt`。
 3. 对错误用例比较生成的 `error.txt` 和标准 `error.txt`。
+4. 对性能用例记录逐例 `FinalCycles` 及总和。
 
-testcase 仓库会持续更新，因此文档不固定记录用例数量。脚本结束时会输出本次选择的正确/错误用例数、失败详情；启用 Mars 时还会统计所有成功运行用例的 `Final Cycle Sum`。
-
-`test/run_testcase_2026.py` 是项目内的测试 harness。外部 testcase 仓库、
-生成数据、Mars jar 和测试输出位于 `test/vendor/`、`test/work/` 等 ignored
-目录中，不随项目提交。
+测试集会持续更新，因此公开文档不记录具体题目、数量、输入输出或逐例成绩。
 
 ## 优化与取舍
 
@@ -429,15 +413,18 @@ testcase 仓库会持续更新，因此文档不固定记录用例数量。脚�
 - 常量数组下标在 IR 生成阶段折叠。
 - IR 常量折叠与跨块常量传播：对 `LoadImd`、一元/二元算术、比较、`MulImd`、`Mult4` 和常量条件分支进行求值。
 - IR 代数化简：处理 `x + 0`、`x * 1`、`x * 0`、`x / 1`、`x % 1` 等局部模式。
-- 复制传播和标量 load 转发：在所有前驱状态一致或唯一 store 支配 load 时消除冗余访存。
+- SCCP、复制传播和标量 load 转发：在可执行边上求常量，并在所有前驱状态一致或唯一 store 支配 load 时消除冗余访存。
 - 完整 mem2reg：通过迭代 dominance frontier 插入 pruned phi，沿支配树进行 SSA 重命名；输出 IR 后在 CFG 边上消解 phi，并正确处理并行复制环。
-- 尾递归消除和只读全局 load 合并：把可证明的尾调用改写为回边，并将无调用函数中的不可变全局读提升到入口。
-- GVN-GCM：全局编号规范化交换律操作数并批量 RAUW；依据 operand/use 支配约束计算 early/late 位置，优先调度到循环深度更小的基本块。
+- 尾递归消除、只读全局折叠和常量实参特化：把可证明的尾调用改写为回边，并对受益调用生成受限特化版本。
+- GVN-GCM/PRE：全局编号规范化交换律操作数并批量 RAUW；依据 operand/use 支配约束计算 early/late 位置，并消除部分冗余表达式。
+- 循环优化：执行 canonicalization、LICM、归纳变量强度削弱、小循环展开、固定归约闭式化、模运算值域化简和整段数组清零识别。
+- 过程间优化：传播副作用、外部内存读取、终止性和常量返回摘要，删除无用纯调用、合并重复纯调用，并内联小型直线/数组函数。
+- 数组内存优化：按“基对象 + 偏移”传播精确位置；对不逃逸且路径上无写入的稠密数组初始化做仿射值转发。
 - 数据流死存储删除和 use-def 死代码删除：基于局部标量活跃性删除无效 store，并删除未使用的纯临时值和空 `alloca`。
 - IR 控制流清理：常量条件分支折叠、终结符后不可达指令删除、不可达基本块删除。
 - 全局寄存器分配：Temp 和局部标量分别建立冲突图并着色，支持溢出、常量重新物化和调用点活跃寄存器保存。
 - `char` 值在需要时用 `andi 0xFF` 截断。
-- 乘以 2 的幂使用移位，除以 2 的幂使用带符号修正的移位序列。
+- 乘以 2 的幂使用移位；常量除数/模数使用移位或带符号修正的乘法魔数序列。
 - 比较结果只供分支使用时直接生成比较分支，不物化布尔值。
 - `li + addu/subu/and/or/slt` 可合并为立即数指令。
 - peephole 会合并相邻 `move`，删除自复制/零增量/跳到下一标签，并把“条件跳转 + 无条件跳转”反转为单条条件分支。
@@ -445,7 +432,7 @@ testcase 仓库会持续更新，因此文档不固定记录用例数量。脚�
 
 当前边界：
 
-- 尚未实现 Memory SSA、内存别名分析、跨调用的 memory GVN 和通用函数内联。
-- 尚未实现 SSA verifier、PRE 和 profile 驱动的代码布局/调度。
+- 内存优化使用保守的位置数据流和仿射别名判断，尚未建立显式 Memory SSA，也不跨未知调用做 memory GVN。
+- 内联和循环闭式化均有代码体积与形态限制；尚未实现完整 ScalarEvolution 和 profile 驱动代价模型。
 
 对可能除零的 `div/mod`、函数调用和动态内存访问，优化 pass 保持保守，不做可能改变可观察行为的外提或公共化。

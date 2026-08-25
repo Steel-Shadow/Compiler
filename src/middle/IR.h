@@ -44,6 +44,9 @@ enum class Op {
     // *(&arg1[Var]+ arg2[Temp]) = res[Temp]
     StoreDynamic,
 
+    // Zero arg2 elements starting at array arg1.
+    MemZero,
+
     // index doesn't consider sizeof(type)
     Load,
 
@@ -59,6 +62,9 @@ enum class Op {
     Mod,
     And,
     Or,
+    Xor,
+    XorLimb,
+    AndLimb,
     Leq,
     Lss,
     Geq,
