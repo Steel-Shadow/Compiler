@@ -14,6 +14,7 @@ enum class Type {
     Char,
     IntPtr,
     CharPtr,
+    Invalid,
 };
 
 struct ParamInfo {

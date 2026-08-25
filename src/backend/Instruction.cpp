@@ -16,6 +16,92 @@
 
 using namespace MIPS;
 
+namespace {
+int internalLabelId = 0;
+
+bool positivePowerOfTwo(int value) {
+    return value > 0 && (value & (value - 1)) == 0;
+}
+
+int powerOfTwoShift(int value) {
+    int shift = 0;
+    while (value > 1) {
+        value >>= 1;
+        ++shift;
+    }
+    return shift;
+}
+
+bool positivePowerOfTwo(long long value) {
+    return value > 0 && (value & (value - 1)) == 0;
+}
+
+int powerOfTwoShift(long long value) {
+    int shift = 0;
+    while (value > 1) {
+        value >>= 1;
+        ++shift;
+    }
+    return shift;
+}
+
+bool emitCheapConstantMultiply(Register destination, Register source, int value) {
+    if (value == 0) {
+        assemblies.push_back(std::make_unique<R_Inst>(
+                Op::move, destination, Register::zero, Register::none));
+        return true;
+    }
+    if (value == 1) {
+        assemblies.push_back(std::make_unique<R_Inst>(
+                Op::move, destination, source, Register::none));
+        return true;
+    }
+    if (value == -1) {
+        assemblies.push_back(std::make_unique<R_Inst>(
+                Op::subu, destination, Register::zero, source));
+        return true;
+    }
+
+    const long long magnitude = value < 0
+                                        ? -static_cast<long long>(value)
+                                        : static_cast<long long>(value);
+    if (positivePowerOfTwo(magnitude)) {
+        assemblies.push_back(std::make_unique<I_imm_Inst>(
+                Op::sll, destination, source, powerOfTwoShift(magnitude)));
+        if (value < 0) {
+            assemblies.push_back(std::make_unique<R_Inst>(
+                    Op::subu, destination, Register::zero, destination));
+        }
+        return true;
+    }
+    if (value < 0) {
+        return false;
+    }
+
+    long long shiftedFactor = 0;
+    Op combine = Op::none;
+    if (positivePowerOfTwo(magnitude - 1)) {
+        shiftedFactor = magnitude - 1;
+        combine = Op::addu;
+    } else if (positivePowerOfTwo(magnitude + 1)) {
+        shiftedFactor = magnitude + 1;
+        combine = Op::subu;
+    } else {
+        return false;
+    }
+
+    Register shifted = destination;
+    if (destination == source) {
+        shifted = acquireScratchRegister();
+    }
+    assemblies.push_back(std::make_unique<I_imm_Inst>(
+            Op::sll, shifted, source, powerOfTwoShift(shiftedFactor)));
+    assemblies.push_back(std::make_unique<R_Inst>(
+            combine, destination, shifted, source));
+    return true;
+}
+} // namespace
+
 std::string MIPS::opToString(Op e) {
     switch (e) {
         case Op::none:
@@ -74,12 +160,32 @@ std::string MIPS::opToString(Op e) {
             return "bgtz";
         case Op::beqz:
             return "beqz";
+        case Op::beq:
+            return "beq";
         case Op::add:
             return "add";
         case Op::sll:
             return "sll";
+        case Op::srl:
+            return "srl";
+        case Op::sra:
+            return "sra";
+        case Op::srav:
+            return "srav";
+        case Op::clz:
+            return "clz";
         case Op::bne:
             return "bne";
+        case Op::blt:
+            return "blt";
+        case Op::ble:
+            return "ble";
+        case Op::bge:
+            return "bge";
+        case Op::bgt:
+            return "bgt";
+        case Op::bltu:
+            return "bltu";
         case Op::addiu:
             return "addiu";
         case Op::subiu:
@@ -146,11 +252,13 @@ std::string I_label_Inst::toString() {
                + label.nameAndId
                + (offset == 0 ? "" : " + " + std::to_string(offset));
     } else {
-        if (op == Op::bne)
+        if (op == Op::beq || op == Op::bne || op == Op::blt || op == Op::ble
+            || op == Op::bge || op == Op::bgt || op == Op::bltu) {
             return opToString(op) + '\t'
                    + regToString(rs) + '\t'
                    + regToString(rt) + '\t'
                    + label.nameAndId;
+        }
 
         return opToString(op) + '\t'
                + regToString(rs) + '\t'
@@ -169,11 +277,11 @@ std::string J_Inst::toString() {
            + label.nameAndId;
 }
 
-Op loadOp(Type type) {
+Op MIPS::loadOp(Type type) {
     return ptrToValue(type) == Type::Char ? Op::lbu : Op::lw;
 }
 
-Op storeOp(Type type) {
+Op MIPS::storeOp(Type type) {
     return ptrToValue(type) == Type::Char ? Op::sb : Op::sw;
 }
 
@@ -237,7 +345,6 @@ void MIPS::OutStack(const IR::Inst &) {
     for (auto varReg = varToRegs.begin(); varReg != varToRegs.end();) {
         auto &[var, reg] = *varReg;
         if (var.depth == curDepth) {
-            freeVarRegs.push(reg);
             varReg = varToRegs.erase(varReg);
         } else {
             ++varReg;
@@ -300,10 +407,19 @@ void MIPS::Add(const IR::Inst &inst) {
     auto arg1 = dynamic_cast<IR::Temp *>(inst.arg1.get());
     auto arg2 = dynamic_cast<IR::Temp *>(inst.arg2.get());
 
-    Register reg1 = getReg(arg1);
-    Register reg2 = getReg(arg2);
     Register regRes = newReg(res);
-    assemblies.push_back(std::make_unique<R_Inst>(Op::addu, regRes, reg1, reg2));
+    const auto lhsConstant = knownConstant(inst.arg1.get());
+    const auto rhsConstant = knownConstant(inst.arg2.get());
+    if (rhsConstant && arg1 && *rhsConstant >= -32768 && *rhsConstant <= 32767) {
+        assemblies.push_back(std::make_unique<I_imm_Inst>(
+                Op::addiu, regRes, getReg(arg1), *rhsConstant));
+    } else if (lhsConstant && arg2 && *lhsConstant >= -32768 && *lhsConstant <= 32767) {
+        assemblies.push_back(std::make_unique<I_imm_Inst>(
+                Op::addiu, regRes, getReg(arg2), *lhsConstant));
+    } else {
+        assemblies.push_back(std::make_unique<R_Inst>(
+                Op::addu, regRes, getReg(arg1), getReg(arg2)));
+    }
     truncateChar(res, regRes);
     checkTempReg(res, regRes);
 }
@@ -313,10 +429,15 @@ void MIPS::Sub(const IR::Inst &inst) {
     auto arg1 = dynamic_cast<IR::Temp *>(inst.arg1.get());
     auto arg2 = dynamic_cast<IR::Temp *>(inst.arg2.get());
 
-    Register reg1 = getReg(arg1);
-    Register reg2 = getReg(arg2);
     Register regRes = newReg(res);
-    assemblies.push_back(std::make_unique<R_Inst>(Op::subu, regRes, reg1, reg2));
+    const auto rhsConstant = knownConstant(inst.arg2.get());
+    if (rhsConstant && arg1 && *rhsConstant >= -32767 && *rhsConstant <= 32768) {
+        assemblies.push_back(std::make_unique<I_imm_Inst>(
+                Op::addiu, regRes, getReg(arg1), -*rhsConstant));
+    } else {
+        assemblies.push_back(std::make_unique<R_Inst>(
+                Op::subu, regRes, getReg(arg1), getReg(arg2)));
+    }
     truncateChar(res, regRes);
     checkTempReg(res, regRes);
 }
@@ -326,10 +447,23 @@ void MIPS::Mul(const IR::Inst &inst) {
     auto arg1 = dynamic_cast<IR::Temp *>(inst.arg1.get());
     auto arg2 = dynamic_cast<IR::Temp *>(inst.arg2.get());
 
-    Register reg1 = getReg(arg1);
-    Register reg2 = getReg(arg2);
     Register regRes = newReg(res);
-    assemblies.push_back(std::make_unique<R_Inst>(Op::mul, regRes, reg1, reg2));
+    const auto lhsConstant = knownConstant(inst.arg1.get());
+    const auto rhsConstant = knownConstant(inst.arg2.get());
+    if (rhsConstant && arg1
+        && emitCheapConstantMultiply(regRes, getReg(arg1), *rhsConstant)) {
+    } else if (lhsConstant && arg2
+               && emitCheapConstantMultiply(regRes, getReg(arg2), *lhsConstant)) {
+    } else if (rhsConstant && arg1) {
+        assemblies.push_back(std::make_unique<I_imm_Inst>(
+                Op::mul, regRes, getReg(arg1), *rhsConstant));
+    } else if (lhsConstant && arg2) {
+        assemblies.push_back(std::make_unique<I_imm_Inst>(
+                Op::mul, regRes, getReg(arg2), *lhsConstant));
+    } else {
+        assemblies.push_back(std::make_unique<R_Inst>(
+                Op::mul, regRes, getReg(arg1), getReg(arg2)));
+    }
     truncateChar(res, regRes);
     checkTempReg(res, regRes);
 }
@@ -339,10 +473,38 @@ void MIPS::Div(const IR::Inst &inst) {
     auto arg1 = dynamic_cast<IR::Temp *>(inst.arg1.get());
     auto arg2 = dynamic_cast<IR::Temp *>(inst.arg2.get());
 
-    Register reg1 = getReg(arg1);
-    Register reg2 = getReg(arg2);
+    const Register reg1 = getReg(arg1);
     Register regRes = newReg(res);
-    assemblies.push_back(std::make_unique<R_Inst>(Op::div, regRes, reg1, reg2));
+    const auto divisor = knownConstant(inst.arg2.get());
+    const long long absoluteDivisor64 = divisor && *divisor < 0
+                                                ? -static_cast<long long>(*divisor)
+                                                : divisor.value_or(0);
+    const int absoluteDivisor = absoluteDivisor64 <= 65536
+                                        ? static_cast<int>(absoluteDivisor64)
+                                        : 0;
+    if (divisor && positivePowerOfTwo(absoluteDivisor)) {
+        Register bias = regRes;
+        if (bias == reg1) {
+            bias = acquireScratchRegister();
+        }
+        if (absoluteDivisor == 2) {
+            assemblies.push_back(std::make_unique<I_imm_Inst>(Op::srl, bias, reg1, 31));
+        } else {
+            assemblies.push_back(std::make_unique<I_imm_Inst>(Op::sra, bias, reg1, 31));
+            assemblies.push_back(std::make_unique<I_imm_Inst>(
+                    Op::andi, bias, bias, absoluteDivisor - 1));
+        }
+        assemblies.push_back(std::make_unique<R_Inst>(Op::addu, regRes, reg1, bias));
+        assemblies.push_back(std::make_unique<I_imm_Inst>(
+                Op::sra, regRes, regRes, powerOfTwoShift(absoluteDivisor)));
+        if (*divisor < 0) {
+            assemblies.push_back(std::make_unique<R_Inst>(
+                    Op::subu, regRes, Register::zero, regRes));
+        }
+    } else {
+        assemblies.push_back(std::make_unique<R_Inst>(
+                Op::div, regRes, reg1, getReg(arg2)));
+    }
     truncateChar(res, regRes);
     checkTempReg(res, regRes);
 }
@@ -352,11 +514,31 @@ void MIPS::Mod(const IR::Inst &inst) {
     auto arg1 = dynamic_cast<IR::Temp *>(inst.arg1.get());
     auto arg2 = dynamic_cast<IR::Temp *>(inst.arg2.get());
 
-    Register reg1 = getReg(arg1);
-    Register reg2 = getReg(arg2);
-    assemblies.push_back(std::make_unique<R_Inst>(Op::div, Register::none, reg1, reg2));
+    const Register reg1 = getReg(arg1);
+    const Register reg2 = getReg(arg2);
     Register regRes = newReg(res);
-    assemblies.push_back(std::make_unique<R_Inst>(Op::mfhi, regRes, Register::none, Register::none));
+    const auto divisor = knownConstant(inst.arg2.get());
+    if (divisor && *divisor >= 65536) {
+        const int label = internalLabelId++;
+        const Label fast("__mips_mod_fast_" + std::to_string(label));
+        const Label done("__mips_mod_done_" + std::to_string(label));
+        assemblies.push_back(std::make_unique<I_label_Inst>(
+                Op::bltu, reg1, reg2, fast));
+        assemblies.push_back(std::make_unique<R_Inst>(
+                Op::div, Register::none, reg1, reg2));
+        assemblies.push_back(std::make_unique<R_Inst>(
+                Op::mfhi, regRes, Register::none, Register::none));
+        assemblies.push_back(std::make_unique<J_Inst>(Op::j, done));
+        assemblies.push_back(std::make_unique<Label>(fast));
+        assemblies.push_back(std::make_unique<R_Inst>(
+                Op::move, regRes, reg1, Register::none));
+        assemblies.push_back(std::make_unique<Label>(done));
+    } else {
+        assemblies.push_back(std::make_unique<R_Inst>(
+                Op::div, Register::none, reg1, reg2));
+        assemblies.push_back(std::make_unique<R_Inst>(
+                Op::mfhi, regRes, Register::none, Register::none));
+    }
     truncateChar(res, regRes);
     checkTempReg(res, regRes);
 }
@@ -365,11 +547,20 @@ void MIPS::And(const IR::Inst &inst) {
     auto res = dynamic_cast<IR::Temp *>(inst.res.get());
     auto arg1 = dynamic_cast<IR::Temp *>(inst.arg1.get());
     auto arg2 = dynamic_cast<IR::Temp *>(inst.arg2.get());
+    auto imm1 = dynamic_cast<IR::ConstVal *>(inst.arg1.get());
+    auto imm2 = dynamic_cast<IR::ConstVal *>(inst.arg2.get());
 
-    Register reg1 = getReg(arg1);
-    Register reg2 = getReg(arg2);
     Register regRes = newReg(res);
-    assemblies.push_back(std::make_unique<R_Inst>(Op::and_, regRes, reg1, reg2));
+    if (imm2 && arg1) {
+        assemblies.push_back(std::make_unique<I_imm_Inst>(
+                Op::andi, regRes, getReg(arg1), imm2->value));
+    } else if (imm1 && arg2) {
+        assemblies.push_back(std::make_unique<I_imm_Inst>(
+                Op::andi, regRes, getReg(arg2), imm1->value));
+    } else {
+        assemblies.push_back(std::make_unique<R_Inst>(
+                Op::and_, regRes, getReg(arg1), getReg(arg2)));
+    }
     truncateChar(res, regRes);
     checkTempReg(res, regRes);
 }
@@ -411,6 +602,10 @@ void MIPS::Not(const IR::Inst &inst) {
 void MIPS::LoadImd(const IR::Inst &inst) {
     auto res = dynamic_cast<IR::Temp *>(inst.res.get());
     auto imm = dynamic_cast<IR::ConstVal *>(inst.arg1.get());
+
+    if (isRematerialized(res)) {
+        return;
+    }
 
     Register regRes = newReg(res);
     assemblies.push_back(std::make_unique<I_imm_Inst>(Op::li, regRes, Register::none, imm->value));
@@ -471,11 +666,9 @@ void MIPS::Alloca(const IR::Inst &inst) {
 
     int byte = sizeOfType(var->type) * size->value;
 
-    if (!freeVarRegs.empty() && var->dims.empty() && size->value == 1) {
-        // try adding the var to the map
-        Register r = freeVarRegs.front();
-        freeVarRegs.pop();
-        varToRegs[*var] = r;
+    auto allocated = allocatedVarRegs.find(*var);
+    if (allocated != allocatedVarRegs.end() && var->dims.empty() && size->value == 1) {
+        varToRegs[*var] = allocated->second;
     } else {
         if (ptrToValue(var->type) != Type::Char) {
             alignStackToWord();
@@ -549,68 +742,24 @@ void MIPS::Call(const IR::Inst &inst) {
     auto func = Label(dynamic_cast<IR::Label *>(inst.arg1.get()));
 
     alignStackToWord();
-    assemblies.push_back(std::make_unique<I_imm_Inst>(Op::addiu, Register::sp, Register::sp, -StackMemory::curOffset));
-    StackMemory::offsetStack.push(StackMemory::curOffset);
-    StackMemory::curOffset = 0;
+    const int callerFrameSize = StackMemory::curOffset;
+    assemblies.push_back(std::make_unique<I_imm_Inst>(
+            Op::addiu, Register::sp, Register::sp, -callerFrameSize));
 
-    // save $sp $ra
-    StackMemory::curOffset += wordSize;
-    assemblies.push_back(std::make_unique<I_imm_Inst>(Op::sw, Register::sp, Register::sp, -StackMemory::curOffset));
-    StackMemory::curOffset += wordSize;
-    assemblies.push_back(std::make_unique<I_imm_Inst>(Op::sw, Register::ra, Register::sp, -StackMemory::curOffset));
-
-    // save tempRegs
-    // Only save used tempRegs, but we still allocate MAX_TEMP_REGS for stack of called function.
-    // In this way, we don't need to consider tempRegs after jal.
-    // I choose to use more stack memory, but fewer instructions.
-    // Another way is, before jal , save the number of used tempRegs to a realReg $?,
-    // use the realReg $? to locate parameters instead of $sp. (slower but less memory use of stack)
-    int unusedTempRegSlots = MAX_TEMP_REGS;
-    for (auto &[tempId, reg]: tempToRegs) {
-        StackMemory::curOffset += wordSize;
+    const auto liveRegisters = liveTempRegistersAfter(inst);
+    for (Register reg: liveRegisters) {
         assemblies.push_back(std::make_unique<I_imm_Inst>(
-                Op::sw, reg, Register::sp, -StackMemory::curOffset));
-        --unusedTempRegSlots;
+                Op::sw, reg, Register::sp, -tempSaveOffset(reg)));
     }
 
-    StackMemory::curOffset += wordSize * unusedTempRegSlots;
-
-    for (auto &[var, reg]: varToRegs) {
-        StackMemory::curOffset += wordSize;
-        assemblies.push_back(std::make_unique<I_imm_Inst>(
-                Op::sw, reg, Register::sp, -StackMemory::curOffset));
-    }
-
-    // jal to function body
     assemblies.push_back(std::make_unique<J_Inst>(Op::jal, func));
 
-    // restore varRegs
-    for (auto i = varToRegs.rbegin(); i != varToRegs.rend(); ++i) {
+    for (auto iter = liveRegisters.rbegin(); iter != liveRegisters.rend(); ++iter) {
         assemblies.push_back(std::make_unique<I_imm_Inst>(
-                Op::lw, i->second, Register::sp, -StackMemory::curOffset));
-        StackMemory::curOffset -= wordSize;
+                Op::lw, *iter, Register::sp, -tempSaveOffset(*iter)));
     }
-
-    StackMemory::curOffset -= wordSize * unusedTempRegSlots;
-
-    // restore tempRegs
-    for (auto i = tempToRegs.rbegin(); i != tempToRegs.rend(); ++i) {
-        assemblies.push_back(std::make_unique<I_imm_Inst>(
-                Op::lw, i->second, Register::sp, -StackMemory::curOffset));
-        StackMemory::curOffset -= wordSize;
-    }
-
-    // restore $ra $sp
-    assemblies.push_back(std::make_unique<I_imm_Inst>(Op::lw, Register::ra, Register::sp, -StackMemory::curOffset));
-    StackMemory::curOffset -= wordSize;
-    assemblies.push_back(std::make_unique<I_imm_Inst>(Op::lw, Register::sp, Register::sp, -StackMemory::curOffset));
-    StackMemory::curOffset -= wordSize;
-
-    // StackMemory::curOffset -= SymTab::find(func.nameAndId)->params.size() * wordSize;
-    // deAllocate stack for call
-    StackMemory::curOffset = StackMemory::offsetStack.top();
-    StackMemory::offsetStack.pop();
-    assemblies.push_back(std::make_unique<I_imm_Inst>(Op::addiu, Register::sp, Register::sp, StackMemory::curOffset));
+    assemblies.push_back(std::make_unique<I_imm_Inst>(
+            Op::addiu, Register::sp, Register::sp, callerFrameSize));
 }
 
 void MIPS::PushParam(const IR::Inst &inst) {
@@ -667,6 +816,7 @@ void MIPS::Ret(const IR::Inst &inst) {
     if (ret) {
         assemblies.push_back(std::make_unique<R_Inst>(Op::move, Register::v0, getReg(ret), Register::none));
     }
+    emitFunctionEpilogue();
     assemblies.push_back(std::make_unique<R_Inst>(Op::jr, Register::none, Register::ra, Register::none));
 }
 
@@ -800,7 +950,11 @@ void MIPS::MulImd(const IR::Inst &inst) {
     auto imm = dynamic_cast<IR::ConstVal *>(inst.arg2.get());
 
     Register regRes = newReg(res);
-    assemblies.push_back(std::make_unique<I_imm_Inst>(Op::mul, regRes, getReg(arg1), imm->value));
+    Register reg1 = getReg(arg1);
+    if (!emitCheapConstantMultiply(regRes, reg1, imm->value)) {
+        assemblies.push_back(std::make_unique<I_imm_Inst>(
+                Op::mul, regRes, reg1, imm->value));
+    }
     truncateChar(res, regRes);
     checkTempReg(res, regRes);
 }

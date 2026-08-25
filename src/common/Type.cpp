@@ -11,6 +11,7 @@
 int sizeOfType(Type type) {
     switch (type) {
         case Type::Void:
+        case Type::Invalid:
             return 0;
         case Type::Char:
             return 1;
@@ -34,6 +35,8 @@ Type ptrToValue(Type type) {
         case Type::Int:
         case Type::Char:
             return type;
+        case Type::Invalid:
+            return Type::Invalid;
         default:
             return Type::Void;
     }
@@ -45,6 +48,8 @@ Type valueToPtr(Type type) {
             return Type::IntPtr;
         case Type::Char:
             return Type::CharPtr;
+        case Type::Invalid:
+            return Type::Invalid;
         default:
             Error::raise("Bad Type in valueToPtr");
             return Type::Void;

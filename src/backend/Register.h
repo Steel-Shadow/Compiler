@@ -6,11 +6,12 @@
 #define REGISTER_H
 
 #include "middle/IR.h"
+
 #include <map>
-#include <queue>
-
-
-#include <unordered_map>
+#include <optional>
+#include <set>
+#include <unordered_set>
+#include <vector>
 
 namespace MIPS {
 // @formatter:off
@@ -30,7 +31,8 @@ enum class Register {
     a2,
     a3,
 
-    // $t0-$t{MAX_TEMP_REGS-1} is used in tempToRegs(IR::Temp.id -> real register)
+    // $t0-$t6 and unused $s0-$s7 are graph-colored values.
+    // $t7-$t9 are reserved for spill/scratch materialization.
     t0,
     t1,
     t2,
@@ -56,7 +58,7 @@ enum class Register {
     gp,
     sp,
 
-    // if freeTempRegs is empty, use $fp to store/load temp into/from stack
+    // Reserved as an address scratch register by the instruction selector.
     fp,
 
     ra,
@@ -64,22 +66,41 @@ enum class Register {
 }; // @formatter:on
 
 
-// at least 5 for correctness
-constexpr int MAX_TEMP_REGS = 8;
+constexpr int MAX_TEMP_REGS = 7;
 constexpr int MAX_VAR_REGS = 8;
+constexpr int CALL_FRAME_RESERVED_WORDS = 1 + MAX_TEMP_REGS + MAX_VAR_REGS;
 
 extern std::map<int, Register> tempToRegs;
-extern std::queue<Register> freeTempRegs;
-
 extern std::map<IR::Var, Register> varToRegs;
-extern std::queue<Register> freeVarRegs;
+extern std::map<IR::Var, Register> allocatedVarRegs;
+
+void prepareRegisterAllocation(const IR::Function &function);
+void configureRegisterArgumentConvention(const IR::Module &module);
+void reserveSpillSlots();
+void beginInstruction(const IR::Inst &inst);
+void endInstruction();
+
+void emitFunctionPrologue(const IR::Function &function, bool isMain);
+void emitFunctionEpilogue();
+
+std::vector<Register> liveTempRegistersAfter(const IR::Inst &inst);
+std::vector<Register> usedVariableRegisters();
+
+bool usesRegisterArguments(const IR::Function &function);
+Register argumentRegister(size_t index);
+
+int tempSaveOffset(Register reg);
+int variableSaveOffset(Register reg);
 
 Register newReg(const IR::Temp *temp);
 
 Register getReg(const IR::Temp *temp);
+Register acquireScratchRegister();
 
-// if freeTempRegs is empty (reg==$t8), we should store temp on stack
+std::optional<int> knownConstant(const IR::Element *element);
+
 void checkTempReg(const IR::Temp *temp, Register reg);
+bool isRematerialized(const IR::Temp *temp);
 
 void clearRegs();
 

@@ -16,16 +16,17 @@ constexpr int data_segment = 0x1001'0000;
 
 int getStackOffset(const IR::Var *var);
 
-// MIPS stack memory map
-// In funcCall, StackMemory::curOffset = 0
-// 0 -> 4GB
-//                                       $sp
-//                                        ↓
-//   s7 ...  s1  s0 | t7  ... t1 t0 ra sp | p0(parameter) p1 ... pN-1 |
-//  -18 ... -12 -11 | -10 ... -4 -3 -2 -1 | 0             1  ... N-1  |
-// -------------
-// MAX_TEMP_REGS = 8
-// MAX_VAR_REGS = 8
+// Stack layout at a non-main function entry (offsets are relative to $sp):
+//
+//   positive offsets: stack parameters
+//                0: first parameter
+//               -4: saved $ra slot
+//          -8..-32: caller-save slots for graph-colored $t0-$t6
+//         -36..-64: callee-save slots for graph-colored $s0-$s7
+//        below -64: local variables and spilled temporaries
+//
+// The fixed call area keeps parameter and save-slot offsets independent of the
+// actual colors used by either caller or callee.
 //
 // when generating MIPS form IR,
 // if we get inst.op == InStack/outStack (BigForStmt IfStmt BlockStmt),
@@ -33,6 +34,7 @@ int getStackOffset(const IR::Var *var);
 namespace StackMemory {
 // clear when generating MIPS for a new Function
 extern std::unordered_map<IR::Var, int> varToOffset;
+extern std::unordered_map<int, int> tempToOffset;
 
 extern int curOffset;
 extern std::stack<int> offsetStack;

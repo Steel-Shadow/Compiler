@@ -577,7 +577,8 @@ std::unique_ptr<ReturnStmt> ReturnStmt::parse() {
         }
         int row = Lexer::curRow; // error handle
         n->exp = Exp::parse(false);
-        if (!Stmt::retVoid && n->exp->getType() != Stmt::retType) {
+        Type returnType = n->exp->getType();
+        if (!Stmt::retVoid && returnType != Type::Invalid && returnType != Stmt::retType) {
             Error::raise('e', row);
         }
         singleLex(LexType::SEMICN, row);
@@ -654,7 +655,11 @@ std::unique_ptr<PrintStmt> PrintStmt::parse() {
         Error::raise('l', row);
     }
     for (size_t i = 0; i < n->exps.size() && i < n->formatTypes.size(); ++i) {
-        Type expType = ptrToValue(n->exps[i]->getType());
+        Type rawExpType = n->exps[i]->getType();
+        if (rawExpType == Type::Invalid) {
+            continue;
+        }
+        Type expType = ptrToValue(rawExpType);
         if (((n->formatTypes[i] == 'd' || n->formatTypes[i] == 'c') && n->exps[i]->getRemainingRank() > 0)
             || (n->formatTypes[i] == 'd' && expType != Type::Int)
             || (n->formatTypes[i] == 'c' && expType != Type::Char)) {
@@ -777,7 +782,11 @@ std::unique_ptr<LValStmt> LValStmt::parse() {
         n = AssignStmt::parse();
         n->lVal = std::move(lVal);
         if (auto assign = dynamic_cast<AssignStmt *>(n.get())) {
-            if (object && (object->getDims().size() != n->lVal->dims.size() || assign->exp->getRemainingRank() > 0 || ptrToValue(object->getType()) != assign->exp->getType())) {
+            Type assignedType = assign->exp->getType();
+            if (object && assignedType != Type::Invalid
+                && (object->getDims().size() != n->lVal->dims.size()
+                    || assign->exp->getRemainingRank() > 0
+                    || ptrToValue(object->getType()) != assignedType)) {
                 Error::raise('e', row);
             }
         }

@@ -45,8 +45,18 @@ enum class Op {
     jr,
     bgtz,
     beqz,
+    beq,
     sll,
+    srl,
+    sra,
+    srav,
+    clz,
     bne,
+    blt,
+    ble,
+    bge,
+    bgt,
+    bltu,
 
     addiu,
     subiu,
@@ -56,6 +66,8 @@ enum class Op {
 };
 
 std::string opToString(Op e);
+Op loadOp(Type type);
+Op storeOp(Type type);
 
 struct Instruction : public Assembly {
     Op op;

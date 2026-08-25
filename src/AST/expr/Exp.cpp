@@ -6,6 +6,8 @@
 #include "frontend/parser/Parser.h"
 #include "frontend/symTab/SymTab.h"
 
+#include <algorithm>
+
 
 using namespace Parser;
 
@@ -79,6 +81,11 @@ Type resolveMultiExpType(Type firstType,
                          const std::vector<Type> &elementTypes,
                          const std::vector<size_t> &elementRemainingRanks,
                          const std::vector<BinaryOp> &ops) {
+    if (firstType == Type::Invalid
+        || std::find(elementTypes.begin(), elementTypes.end(), Type::Invalid) != elementTypes.end()) {
+        return Type::Invalid;
+    }
+
     bool typeMismatch = false;
     for (size_t i = 0; i < elementTypes.size(); ++i) {
         if (firstRemainingRank > 0 || elementRemainingRanks[i] > 0

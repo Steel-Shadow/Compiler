@@ -65,7 +65,8 @@ std::unique_ptr<Def> Def::parse(bool cons, Type type, bool statik) {
     if (n->initVal) {
         if (dims.empty()) {
             if (auto expInit = dynamic_cast<ExpInitVal *>(n->initVal.get())) {
-                if (expInit->exp->getType() != type) {
+                Type initType = expInit->exp->getType();
+                if (initType != Type::Invalid && initType != type) {
                     Error::raise('e', defRow);
                 }
             } else {
@@ -73,7 +74,8 @@ std::unique_ptr<Def> Def::parse(bool cons, Type type, bool statik) {
             }
         } else if (auto array = dynamic_cast<ArrayInitVal *>(n->initVal.get())) {
             for (auto &expInit: array->getFlatten()) {
-                if (expInit->exp->getType() != type) {
+                Type initType = expInit->exp->getType();
+                if (initType != Type::Invalid && initType != type) {
                     Error::raise('e', defRow);
                     break;
                 }

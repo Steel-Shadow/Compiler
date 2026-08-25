@@ -80,7 +80,8 @@ std::unique_ptr<LVal> LVal::parse() {
         Lexer::next();
         int row = Lexer::curRow;
         auto index = Exp::parse(false);
-        if (index->getType() != Type::Int) {
+        Type indexType = index->getType();
+        if (indexType != Type::Invalid && indexType != Type::Int) {
             Error::raise('e', row);
         }
         if (symbol && (!object || n->dims.size() + 1 > object->getDims().size())) {
@@ -239,15 +240,19 @@ bool LVal::getOffset(int &constOffset, std::unique_ptr<IR::Temp> &dynamicOffset,
     if (getNonConstIndex) {
         int elementSize = sizeOfType(ptrToValue(type));
         if (elementSize == 4) {
+            auto byteOffset = std::make_unique<IR::Temp>(Type::Int);
             bBlocks.back()->addInst(IR::Inst(IR::Op::Mult4,
-                                             std::make_unique<IR::Temp>(*dynamicOffset),
+                                             std::make_unique<IR::Temp>(*byteOffset),
                                              std::make_unique<IR::Temp>(*dynamicOffset),
                                              nullptr));
+            dynamicOffset = std::move(byteOffset);
         } else if (elementSize != 1) {
+            auto byteOffset = std::make_unique<IR::Temp>(Type::Int);
             bBlocks.back()->addInst(IR::Inst(IR::Op::MulImd,
-                                             std::make_unique<IR::Temp>(*dynamicOffset),
+                                             std::make_unique<IR::Temp>(*byteOffset),
                                              std::make_unique<IR::Temp>(*dynamicOffset),
                                              std::make_unique<IR::ConstVal>(elementSize, Type::Int)));
+            dynamicOffset = std::move(byteOffset);
         }
     }
 
@@ -257,7 +262,7 @@ bool LVal::getOffset(int &constOffset, std::unique_ptr<IR::Temp> &dynamicOffset,
 Type LVal::getType() {
     auto sym = SymTab::find(ident);
     if (!sym) {
-        return Type::Void;
+        return Type::Invalid;
     }
     auto *object = sym->asObject();
     if (!object) {
@@ -375,8 +380,7 @@ std::unique_ptr<UnaryExp> UnaryExp::parse() {
                 break;
 
             case LexType::LPARENT:
-                if ((Lexer::peek(1).first == LexType::INTTK || Lexer::peek(1).first == LexType::CHARTK)
-                    && Lexer::peek(2).first == LexType::RPARENT) {
+                if (Lexer::peek(1).first == LexType::INTTK || Lexer::peek(1).first == LexType::CHARTK) {
                     n->baseUnaryExp = CastExp::parse();
                     getBaseUnaryExp = true;
 
@@ -410,6 +414,11 @@ std::unique_ptr<UnaryExp> UnaryExp::parse() {
 
             default:
                 Error::raise();
+                n->baseUnaryExp = std::make_unique<Number>();
+                getBaseUnaryExp = true;
+                if (Lexer::curLexType != LexType::LEX_END) {
+                    Lexer::next();
+                }
         }
     }
 
@@ -489,12 +498,16 @@ LVal *UnaryExp::getLVal() const {
 }
 
 Type UnaryExp::getType() const {
+    Type baseType = baseUnaryExp->getType();
+    if (baseType == Type::Invalid) {
+        return Type::Invalid;
+    }
     for (UnaryOp op: ops) {
         if (op == UnaryOp::Not) {
             return Type::Int;
         }
     }
-    return baseUnaryExp->getType();
+    return baseType;
 }
 
 std::unique_ptr<FuncCall> FuncCall::parse() {
@@ -542,6 +555,10 @@ void FuncCall::checkParams(const std::unique_ptr<FuncCall> &n, int row, const Fu
         // check type of params
         for (size_t i = 0; i < realParams.size(); ++i) {
             auto &rParam = realParams[i];
+            Type realType = rParam->getType();
+            if (realType == Type::Invalid) {
+                continue;
+            }
 
             size_t formalRank = formalParams[i].dims.size();
             size_t symRank = 0;
@@ -555,7 +572,7 @@ void FuncCall::checkParams(const std::unique_ptr<FuncCall> &n, int row, const Fu
             }
 
             // only consider value Type, no dimentions
-            if (ptrToValue(rParam->getType()) != ptrToValue(formalParams[i].type)) {
+            if (ptrToValue(realType) != ptrToValue(formalParams[i].type)) {
                 Error::raise('e', row);
                 continue;
             }
@@ -724,7 +741,7 @@ Type FuncCall::getType() {
     auto sym = SymTab::find(ident);
     auto *funcSym = sym ? sym->asFunc() : nullptr;
     if (!funcSym) {
-        return Type::Void;
+        return Type::Invalid;
     }
     return funcSym->getType();
 }

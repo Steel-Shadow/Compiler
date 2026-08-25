@@ -261,12 +261,12 @@ struct Inst {
 - 内存：`Alloca`、`Load`、`LoadPtr`、`LoadDynamic`、`Store`、`StoreDynamic`。
 - 算术与逻辑：`Add`、`Sub`、`Mul`、`Div`、`Mod`、`And`、`Or`、`Not`。
 - 比较：`Leq`、`Lss`、`Geq`、`Gre`、`Eql`、`Neq`。
-- 控制流：`Br`、`Bif0`、`Bif1`。
+- SSA：`Parameter`、`Phi`；控制流：`Br`、`Bif0`、`Bif1`。
 - 调用：`Call`、`PushParam`、`PushAddressParam`、`Ret`、`RetMain`。
 - I/O：`GetInt`、`GetChar`、`GetString`、`PrintInt`、`PrintChar`、`PrintStr`。
 - 栈作用域：`InStack`、`OutStack`。
 
-IR 在进入 MIPS 后端前会运行 `Module::optimize()`。优化管线使用一个轻量 `PassManager`，按函数迭代执行常量折叠、代数化简、基本块内标量内存常量传播、基于 use-def 的死代码删除、死存储删除、终结符后代码清理和不可达基本块删除。优化后的 IR 再输出到 `ir.txt`，MIPS 后端也消费同一份优化后模块。
+IR 在进入 MIPS 后端前会运行 `Module::optimize()`。优化管线先执行尾递归消除，再使用 dominance frontier 插入 pruned phi、沿支配树重命名并完成 mem2reg；随后运行常量/复制传播、GVN-GCM、死存储/死代码删除和控制流清理。`Analysis.*` 提供 CFG、支配关系、dominance frontier、循环深度以及 Temp/局部标量活跃性分析，`Optimize.*` 与 `GVNGCM.cpp` 实现跨基本块优化。优化后的 SSA IR 输出到 `ir.txt`；进入 MIPS 后端前再拆分关键边并将 phi 降低为并行复制。
 
 ### 作用域栈
 
@@ -301,9 +301,9 @@ MIPS 后端位于 `src/backend`，主要组件：
 - `Instruction.*`：IR 到 MIPS 指令翻译。
 - `Register.*`：临时寄存器和变量寄存器分配。
 - `Memory.*`：栈偏移映射。
-- `MIPS.*`：`CodeGenerator` 模块级汇编输出和简单 peephole 优化。
+- `MIPS.*`：`CodeGenerator` 模块级汇编输出和 peephole 优化。
 
-后端入口是 `MIPS::genMIPS(const IR::Module&)`，即从优化后的 LLVM-like IR 模块生成 `.data` / `.text`。后端仍保留面向课程 MIPS 的栈帧、寄存器池和 peephole pass；中端优化负责先收缩 IR，后端 peephole 再合并相邻 `li`、`move` 和立即数算术。
+后端入口是 `MIPS::genMIPS(const IR::Module&)`，即从优化后的 LLVM-like IR 模块生成 `.data` / `.text`。后端负责 MIPS 栈帧、图着色寄存器分配、指令选择和 peephole pass；中端先收缩 IR，后端再处理目标相关的立即数、move 和分支模式。
 
 ### 数据段
 
@@ -325,6 +325,7 @@ __static_map_cnt_0
 
 ```cpp
 StackMemory::varToOffset
+StackMemory::tempToOffset
 ```
 
 局部变量分配策略：
@@ -337,28 +338,30 @@ StackMemory::varToOffset
 
 ### 寄存器分配
 
-临时值使用 `$t` 寄存器池：
+IR 临时值使用 `$t` 寄存器：
 
-- IR `Temp` 通常只定义一次、使用一次。
-- `getReg()` 获取寄存器后可及时释放已消费的临时寄存器。
-- 若临时寄存器不足，会退化到栈上存储。
+- 后端先在 CFG 上做活跃变量分析，再建立 Temp 冲突图。
+- 使用简化/溢出启发式图着色，将全函数 Temp 分配到 `$t0-$t6`。
+- `$t7-$t9` 是单条指令生命周期的 scratch 池，用于装载溢出值和承接结果。
+- 着色失败的 Temp 预留稳定的栈槽；常量 Temp 优先重新物化为 `li`，不做无意义的 store/load。
 
-局部标量变量使用 `$s` 寄存器池：
+可安全寄存器化的局部标量使用 `$s0-$s7`：
 
-- 离开作用域时释放对应变量寄存器。
-- 函数调用前保存当前使用的 `$s` 和 `$t` 寄存器，返回后恢复。
+- 独立进行变量活跃性分析和冲突图着色，数组、取地址对象和全局对象仍留在内存。
+- `$s` 遵循 callee-saved 约定，由使用这些颜色的被调函数保存和恢复。
+- `$t` 遵循 caller-saved 约定，调用点只保存该点之后仍活跃的已着色寄存器。
 
 ### 函数调用
 
-本实现没有使用 `$a0-$a3` 传递用户函数参数，而是统一通过栈传参，简化寄存器冲突处理。
+至多四个标量参数的叶函数，在全部调用点都不存在嵌套调用或地址参数时使用 `$a0-$a3`。只要一个调用点不满足条件，该函数的所有调用点就统一回退到栈传参，避免调用方和被调方约定不一致。
 
 调用过程：
 
-1. 按实参逆序生成 `PushParam` 或 `PushAddressParam`。
-2. 调整 `$sp`，保存 `$sp`、`$ra`、临时寄存器和变量寄存器。
-3. `jal` 到目标函数。
-4. 恢复现场。
-5. 如果函数有返回值，立即把 `$v0` 移动到新的 `IR::Temp`，避免嵌套调用覆盖。
+1. 按实参逆序生成 `PushParam` 或 `PushAddressParam`；满足寄存器参数条件时直接写入 `$a0-$a3`。
+2. 调整 `$sp` 到被调函数栈帧，并保存调用点仍活跃的 `$t0-$t6`。
+3. `jal` 到目标函数；被调函数保存实际使用的 `$s0-$s7`，非叶函数同时保存 `$ra`。
+4. 返回前由被调函数恢复 `$s`/`$ra`，调用者恢复活跃 `$t` 和 `$sp`。
+5. 如果函数有返回值，将 `$v0` 写入该 `IR::Temp` 的着色寄存器或溢出槽。
 
 数组实参传递的是地址：
 
@@ -413,13 +416,7 @@ python3 test/run_testcase_2026.py --mars-jar ./test/vendor/Mars-2024.jar
 2. 若指定 `--mars-jar`，使用 Mars 运行 `mips.txt`，并比较输出和 `ans.txt`。
 3. 对错误用例比较生成的 `error.txt` 和标准 `error.txt`。
 
-当前已验证的前端/错误处理测试结果：
-
-```text
-Correct cases: 243
-Error cases:   44
-Failures:      0
-```
+testcase 仓库会持续更新，因此文档不固定记录用例数量。脚本结束时会输出本次选择的正确/错误用例数、失败详情；启用 Mars 时还会统计所有成功运行用例的 `Final Cycle Sum`。
 
 `test/run_testcase_2026.py` 是项目内的测试 harness。外部 testcase 仓库、
 生成数据、Mars jar 和测试输出位于 `test/vendor/`、`test/work/` 等 ignored
@@ -427,24 +424,28 @@ Failures:      0
 
 ## 优化与取舍
 
-当前优化分为 IR pass 和 MIPS peephole 两层，整体以简单、局部、稳定为主：
+当前优化分为 IR pass 和 MIPS peephole 两层：
 
 - 常量数组下标在 IR 生成阶段折叠。
-- IR 常量折叠：对 `LoadImd`、一元/二元算术、比较、`MulImd`、`Mult4` 进行常量求值。
+- IR 常量折叠与跨块常量传播：对 `LoadImd`、一元/二元算术、比较、`MulImd`、`Mult4` 和常量条件分支进行求值。
 - IR 代数化简：处理 `x + 0`、`x * 1`、`x * 0`、`x / 1`、`x % 1` 等局部模式。
-- 基本块内标量内存常量传播：局部标量变量刚存入常量后，后续 `load` 可改写为 SSA 常量。
-- IR 死代码/死存储删除：通过 `Function::buildUseDefChains()` 删除未使用的纯临时值，并删除不被读取、不取地址的局部标量存储和空 `alloca`。
+- 复制传播和标量 load 转发：在所有前驱状态一致或唯一 store 支配 load 时消除冗余访存。
+- 完整 mem2reg：通过迭代 dominance frontier 插入 pruned phi，沿支配树进行 SSA 重命名；输出 IR 后在 CFG 边上消解 phi，并正确处理并行复制环。
+- 尾递归消除和只读全局 load 合并：把可证明的尾调用改写为回边，并将无调用函数中的不可变全局读提升到入口。
+- GVN-GCM：全局编号规范化交换律操作数并批量 RAUW；依据 operand/use 支配约束计算 early/late 位置，优先调度到循环深度更小的基本块。
+- 数据流死存储删除和 use-def 死代码删除：基于局部标量活跃性删除无效 store，并删除未使用的纯临时值和空 `alloca`。
 - IR 控制流清理：常量条件分支折叠、终结符后不可达指令删除、不可达基本块删除。
+- 全局寄存器分配：Temp 和局部标量分别建立冲突图并着色，支持溢出、常量重新物化和调用点活跃寄存器保存。
 - `char` 值在需要时用 `andi 0xFF` 截断。
-- 乘 4 偏移使用 `sll`。
+- 乘以 2 的幂使用移位，除以 2 的幂使用带符号修正的移位序列。
+- 比较结果只供分支使用时直接生成比较分支，不物化布尔值。
 - `li + addu/subu/and/or/slt` 可合并为立即数指令。
-- 部分相邻 `move` 可合并。
+- peephole 会合并相邻 `move`，删除自复制/零增量/跳到下一标签，并把“条件跳转 + 无条件跳转”反转为单条条件分支。
+- 对严格匹配的无副作用、有界双参数尾递推，后端可使用 `clz/ctz` 批处理、直接索引缓存和唯一热调用点内联；匹配失败时保持通用路径。
 
-尚未实现的优化：
+当前边界：
 
-- 全局数据流分析。
-- 图着色寄存器分配。
-- 公共子表达式消除。
-- 完整 LLVM `mem2reg` / SSA phi 插入。
+- 尚未实现 Memory SSA、内存别名分析、跨调用的 memory GVN 和通用函数内联。
+- 尚未实现 SSA verifier、PRE 和 profile 驱动的代码布局/调度。
 
-本项目优先保证语义正确性和测试稳定性。尤其在函数调用、数组传参、错误恢复这些位置，采用了更保守但更可控的实现方式。
+对可能除零的 `div/mod`、函数调用和动态内存访问，优化 pass 保持保守，不做可能改变可观察行为的外提或公共化。

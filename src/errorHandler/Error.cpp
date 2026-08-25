@@ -24,7 +24,8 @@ void Error::raise(char code) {
 
 void Error::raise(char code, int row) {
     auto [_, inserted] = raisedErrors.emplace(row, code);
-    if (!inserted) {
+    // Nested parenthesized productions can each be missing their own ')'.
+    if (!inserted && code != 'j') {
         return;
     }
     hasError = true;

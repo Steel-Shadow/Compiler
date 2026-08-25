@@ -77,6 +77,12 @@ enum class Op {
     // res[Temp] = arg1[Temp]
     NewMove,
 
+    // res[Temp] = phi [value, predecessor]...
+    Phi,
+
+    // res[Temp] = incoming scalar function parameter arg1[Var]
+    Parameter,
+
     // res[Var] = getint()
     GetInt,
     GetChar,
@@ -171,6 +177,21 @@ struct User {
     virtual std::vector<OperandRef> operands() const = 0;
 };
 
+struct PhiIncoming {
+    std::string predecessor;
+    std::unique_ptr<Element> value;
+
+    PhiIncoming(std::string predecessor, std::unique_ptr<Element> value);
+    PhiIncoming(PhiIncoming &&) noexcept = default;
+    PhiIncoming &operator=(PhiIncoming &&) noexcept = default;
+    PhiIncoming(const PhiIncoming &) = delete;
+    PhiIncoming &operator=(const PhiIncoming &) = delete;
+};
+
+struct Var;
+bool operator==(const Var &lhs, const Var &rhs);
+std::size_t hash_value(const Var &obj);
+
 struct Var : public Element {
     std::string name;
     int depth;
@@ -204,6 +225,7 @@ struct Temp : public Element {
     explicit Temp(int id, Type type);
     explicit Temp(Type type);
     Temp(Temp const &other);
+    Temp &operator=(Temp const &other) = default;
 
     std::string toString() const override;
     std::unique_ptr<Element> clone() const override;
@@ -241,6 +263,7 @@ struct Inst : public User {
     std::unique_ptr<Element> res;
     std::unique_ptr<Element> arg1;
     std::unique_ptr<Element> arg2;
+    std::vector<PhiIncoming> phiIncoming;
 
     Inst(Op op,
          std::unique_ptr<Element> res,
@@ -258,6 +281,7 @@ struct Inst : public User {
     std::unique_ptr<Element> &operandSlot(size_t slot);
     const std::unique_ptr<Element> &operandSlot(size_t slot) const;
     void setOperand(size_t slot, std::unique_ptr<Element> value);
+    void addPhiIncoming(std::string predecessor, std::unique_ptr<Element> value);
     bool definesTemp() const;
     bool definesValue() const;
     bool isScopeMarker() const;
@@ -360,11 +384,14 @@ public:
 
     void outputIR() const;
     void optimize();
+    void lowerPhiNodes();
 
     const std::vector<std::pair<std::string, GlobVar>> &getGlobVars() const;
     const std::vector<std::unique_ptr<Function>> &getFunctions() const;
+    std::vector<std::unique_ptr<Function>> &getMutableFunctions();
 
     const Function &getMainFunction() const;
+    Function &getMutableMainFunction();
     void setMainFunction(std::unique_ptr<Function> main_function);
 
     void addFunction(std::unique_ptr<Function> function);

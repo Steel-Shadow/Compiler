@@ -142,8 +142,12 @@ Params FuncFParams::getParameters() const {
     Params params;
     params.reserve(funcFParams.size());
     for (auto &i: funcFParams) {
-        auto *sym = SymTab::find(i->ident)->asParam();
-        params.emplace_back(i->ident, sym->getType(), sym->getDims());
+        auto dims = i->getDims();
+        Type type = toType(i->type->type);
+        if (!dims.empty()) {
+            type = valueToPtr(type);
+        }
+        params.emplace_back(i->ident, type, std::move(dims));
     }
     return params;
 }

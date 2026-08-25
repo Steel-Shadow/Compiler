@@ -292,12 +292,55 @@ void updateWords(LexType l, Token t) {
 // distinguish between Exp and LVal in Stmt
 // It's wrong if Cond is a kind of Exp, but our work doesn't require it.
 bool Lexer::findAssignBeforeSemicolon() {
-    for (auto t = pos[0] == 0 ? size_t{0} : pos[0] - 1;
-         t < fileContents.length() && fileContents[t] != ';'; ++t) {
-        if (fileContents[t] == '\n') {
+    bool inChar = false;
+    bool inString = false;
+    bool inLineComment = false;
+    bool inBlockComment = false;
+    bool escaped = false;
+    for (size_t t = pos[0] == 0 ? 0 : pos[0] - 1; t < fileContents.size(); ++t) {
+        const char current = fileContents[t];
+        const char next = t + 1 < fileContents.size() ? fileContents[t + 1] : '\0';
+
+        if (current == '\n') {
             return false;
         }
-        if (fileContents[t] == '=') {
+
+        if (inLineComment) {
+            continue;
+        }
+        if (inBlockComment) {
+            if (current == '*' && next == '/') {
+                inBlockComment = false;
+                ++t;
+            }
+            continue;
+        }
+        if (inChar || inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (current == '\\') {
+                escaped = true;
+            } else if ((inChar && current == '\'') || (inString && current == '"')) {
+                inChar = false;
+                inString = false;
+            }
+            continue;
+        }
+
+        if (current == '/' && next == '/') {
+            inLineComment = true;
+            ++t;
+        } else if (current == '/' && next == '*') {
+            inBlockComment = true;
+            ++t;
+        } else if (current == '\'') {
+            inChar = true;
+        } else if (current == '"') {
+            inString = true;
+        } else if (current == ';') {
+            return false;
+        } else if (current == '=' && next != '='
+                   && (t == 0 || (fileContents[t - 1] != '=' && fileContents[t - 1] != '!' && fileContents[t - 1] != '<' && fileContents[t - 1] != '>'))) {
             return true;
         }
     }

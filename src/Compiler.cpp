@@ -33,6 +33,7 @@ bool compile(const CompileOptions &options) {
         auto module = compUnit->genIR();
         module->optimize();
         module->outputIR();
+        module->lowerPhiNodes();
         MIPS::genMIPS(*module);
     }
     return !Error::hasError;

@@ -12,6 +12,8 @@
 
 #include "config.h"
 #include "errorHandler/Error.h"
+#include "middle/Analysis.h"
+#include "middle/Optimize.h"
 
 using namespace IR;
 
@@ -675,6 +677,65 @@ bool cleanupScalarMemory(Function &function) {
     return changed;
 }
 
+bool propagateConstantGlobals(
+        Function &function,
+        const std::vector<std::pair<std::string, GlobVar>> &globals) {
+    std::unordered_map<std::string, ConstInfo> constants;
+    for (const auto &[name, global]: globals) {
+        if (global.cons && global.dims.empty() && !global.initVal.empty()) {
+            constants.emplace(name, ConstInfo{global.initVal.front(), global.type});
+        }
+    }
+
+    bool changed = false;
+    for (auto &block: function.getMutableBasicBlocks()) {
+        for (auto &inst: block->instructions) {
+            const auto *var = asVar(inst.arg1);
+            if (inst.op != Op::Load || !var || var->depth != 0 || inst.arg2) {
+                continue;
+            }
+            auto constant = constants.find(var->name);
+            if (constant == constants.end()) {
+                continue;
+            }
+            replaceWithLoadImm(inst, constant->second.value, constant->second.type);
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+bool poolEntryConstants(Function &function) {
+    auto &blocks = function.getMutableBasicBlocks();
+    if (blocks.empty()) {
+        return false;
+    }
+
+    std::unordered_map<std::string, Temp> canonical;
+    bool changed = false;
+    auto &instructions = blocks.front()->instructions;
+    for (size_t index = 0; index < instructions.size();) {
+        auto &inst = instructions[index];
+        const auto *result = asTemp(inst.res);
+        const auto *constant = asConst(inst.arg1);
+        if (inst.op != Op::LoadImd || !result || result->id < 0 || !constant) {
+            ++index;
+            continue;
+        }
+        const std::string key = typeKey(constant->type) + ":" + std::to_string(constant->value);
+        auto existing = canonical.find(key);
+        if (existing == canonical.end()) {
+            canonical.emplace(key, *result);
+            ++index;
+            continue;
+        }
+        function.replaceAllUsesWith(*result, existing->second);
+        instructions.erase(instructions.begin() + static_cast<long>(index));
+        changed = true;
+    }
+    return changed;
+}
+
 class FunctionPass {
 public:
     virtual ~FunctionPass() = default;
@@ -685,6 +746,55 @@ class ConstantFoldPass final : public FunctionPass {
 public:
     bool run(Function &function) override {
         return simplifyConstants(function);
+    }
+};
+
+class GlobalPropagationPass final : public FunctionPass {
+public:
+    bool run(Function &function) override {
+        return propagateGlobalConstantsAndCopies(function);
+    }
+};
+
+class ScalarLoadForwardingPass final : public FunctionPass {
+public:
+    bool run(Function &function) override {
+        return forwardScalarLoads(function);
+    }
+};
+
+class TailRecursionEliminationPass final : public FunctionPass {
+public:
+    bool run(Function &function) override {
+        return eliminateTailRecursion(function);
+    }
+};
+
+class ReadOnlyGlobalLoadHoistingPass final : public FunctionPass {
+public:
+    bool run(Function &function) override {
+        return hoistReadOnlyGlobalLoads(function);
+    }
+};
+
+class EntryConstantPoolingPass final : public FunctionPass {
+public:
+    bool run(Function &function) override {
+        return poolEntryConstants(function);
+    }
+};
+
+class LoopInvariantCodeMotionPass final : public FunctionPass {
+public:
+    bool run(Function &function) override {
+        return hoistLoopInvariantCode(function);
+    }
+};
+
+class InductionStrengthReductionPass final : public FunctionPass {
+public:
+    bool run(Function &function) override {
+        return reduceInductionVariableStrength(function);
     }
 };
 
@@ -709,10 +819,45 @@ public:
     }
 };
 
+class DeadStoreEliminationPass final : public FunctionPass {
+public:
+    bool run(Function &function) override {
+        return eliminateDeadScalarStores(function);
+    }
+};
+
 class UnreachableBlockEliminationPass final : public FunctionPass {
 public:
     bool run(Function &function) override {
         return removeUnreachableBlocks(function);
+    }
+};
+
+class PhiCleanupPass final : public FunctionPass {
+public:
+    bool run(Function &function) override {
+        return simplifyPhiNodes(function);
+    }
+};
+
+class SparseConditionalConstantPropagationPass final : public FunctionPass {
+public:
+    bool run(Function &function) override {
+        return sparseConditionalConstantPropagation(function);
+    }
+};
+
+class CFGSimplificationPass final : public FunctionPass {
+public:
+    bool run(Function &function) override {
+        return simplifyControlFlow(function);
+    }
+};
+
+class MemoryValueOptimizationPass final : public FunctionPass {
+public:
+    bool run(Function &function) override {
+        return optimizeMemoryValues(function);
     }
 };
 
@@ -844,6 +989,10 @@ const std::vector<std::unique_ptr<Function>> &Module::getFunctions() const {
     return functions;
 }
 
+std::vector<std::unique_ptr<Function>> &Module::getMutableFunctions() {
+    return functions;
+}
+
 Inst::Inst(Op op,
            std::unique_ptr<Element> res,
            std::unique_ptr<Element> arg1,
@@ -853,6 +1002,10 @@ Inst::Inst(Op op,
     arg1(std::move(arg1)),
     arg2(std::move(arg2)) {}
 
+PhiIncoming::PhiIncoming(std::string predecessor, std::unique_ptr<Element> value) :
+    predecessor(std::move(predecessor)),
+    value(std::move(value)) {}
+
 void Inst::outputIR() const {
     const auto line = toLLVMString();
     if (!line.empty()) {
@@ -861,15 +1014,20 @@ void Inst::outputIR() const {
 }
 
 std::string Inst::toString() const {
-    return opToStr(op) + '\t'
-           + (res ? res->toString() : "_") + '\t'
-           + (arg1 ? arg1->toString() : "_") + '\t'
-           + (arg2 ? arg2->toString() : "_");
+    std::string result = opToStr(op) + '\t'
+                         + (res ? res->toString() : "_") + '\t'
+                         + (arg1 ? arg1->toString() : "_") + '\t'
+                         + (arg2 ? arg2->toString() : "_");
+    for (const auto &incoming: phiIncoming) {
+        result += "\t[" + (incoming.value ? incoming.value->toString() : "_")
+                  + ", " + incoming.predecessor + "]";
+    }
+    return result;
 }
 
 std::vector<OperandRef> Inst::operands() const {
     std::vector<OperandRef> result;
-    result.reserve(3);
+    result.reserve(3 + phiIncoming.size());
     auto add = [&](OperandRole role, size_t slot, const std::unique_ptr<Element> &value) {
         if (value) {
             result.push_back({role, slot, value.get()});
@@ -923,6 +1081,16 @@ std::vector<OperandRef> Inst::operands() const {
             add(OperandRole::Definition, 0, res);
             add(OperandRole::Value, 1, arg1);
             break;
+        case Op::Phi:
+            add(OperandRole::Definition, 0, res);
+            for (size_t index = 0; index < phiIncoming.size(); ++index) {
+                add(OperandRole::Value, 3 + index, phiIncoming[index].value);
+            }
+            break;
+        case Op::Parameter:
+            add(OperandRole::Definition, 0, res);
+            add(OperandRole::Address, 1, arg1);
+            break;
         case Op::GetString:
             add(OperandRole::Value, 0, res);
             add(OperandRole::Address, 1, arg1);
@@ -973,6 +1141,9 @@ std::unique_ptr<Element> &Inst::operandSlot(size_t slot) {
         case 2:
             return arg2;
         default:
+            if (op == Op::Phi && slot >= 3 && slot - 3 < phiIncoming.size()) {
+                return phiIncoming[slot - 3].value;
+            }
             Error::raise("Bad IR operand slot");
             return res;
     }
@@ -987,6 +1158,9 @@ const std::unique_ptr<Element> &Inst::operandSlot(size_t slot) const {
         case 2:
             return arg2;
         default:
+            if (op == Op::Phi && slot >= 3 && slot - 3 < phiIncoming.size()) {
+                return phiIncoming[slot - 3].value;
+            }
             Error::raise("Bad IR operand slot");
             return res;
     }
@@ -994,6 +1168,10 @@ const std::unique_ptr<Element> &Inst::operandSlot(size_t slot) const {
 
 void Inst::setOperand(size_t slot, std::unique_ptr<Element> value) {
     operandSlot(slot) = std::move(value);
+}
+
+void Inst::addPhiIncoming(std::string predecessor, std::unique_ptr<Element> value) {
+    phiIncoming.emplace_back(std::move(predecessor), std::move(value));
 }
 
 std::string Inst::toLLVMString() const {
@@ -1073,6 +1251,19 @@ std::string Inst::toLLVMString() const {
             return resName + " = shl " + resType + " " + arg1Name + ", 2";
         case Op::NewMove:
             return resName + " = mov " + resType + " " + arg1Name;
+        case Op::Phi: {
+            std::string result = resName + " = phi " + resType + " ";
+            for (size_t index = 0; index < phiIncoming.size(); ++index) {
+                if (index != 0) {
+                    result += ", ";
+                }
+                result += "[ " + valueLLVMName(phiIncoming[index].value.get())
+                          + ", %" + phiIncoming[index].predecessor + " ]";
+            }
+            return result;
+        }
+        case Op::Parameter:
+            return resName + " = param " + resType + " " + arg1Name;
         case Op::Not:
             return resName + " = icmp eq " + arg1Type + " " + arg1Name + ", 0";
         case Op::GetInt:
@@ -1138,6 +1329,8 @@ bool Inst::definesTemp() const {
         case Op::Neg:
         case Op::Mult4:
         case Op::NewMove:
+        case Op::Phi:
+        case Op::Parameter:
         case Op::Not:
             return true;
         default:
@@ -1259,6 +1452,10 @@ std::string Inst::opToStr(Op anOperator) {
             return "OutStack";
         case Op::NewMove:
             return "NewMove";
+        case Op::Phi:
+            return "Phi";
+        case Op::Parameter:
+            return "Parameter";
         case Op::Leq:
             return "Leq";
         case Op::Lss:
@@ -1432,18 +1629,78 @@ void Module::outputIR() const {
 }
 
 void Module::optimize() {
-    PassManager passManager;
-    passManager.addPass<ConstantFoldPass>();
-    passManager.addPass<TerminatorCleanupPass>();
-    passManager.addPass<DeadCodeEliminationPass>();
-    passManager.addPass<ScalarMemoryCleanupPass>();
-    passManager.addPass<UnreachableBlockEliminationPass>();
-
     if (mainFunction) {
-        passManager.run(*mainFunction);
+        normalizeBasicBlocks(*mainFunction);
     }
     for (auto &function: functions) {
-        passManager.run(*function);
+        normalizeBasicBlocks(*function);
+    }
+
+    for (int iteration = 0; iteration < 32 && inlineFunctions(*this); ++iteration) {
+    }
+    eliminateUnreachableFunctions(*this);
+
+    PassManager passManager;
+    passManager.addPass<ReadOnlyGlobalLoadHoistingPass>();
+    passManager.addPass<SparseConditionalConstantPropagationPass>();
+    passManager.addPass<ConstantFoldPass>();
+    passManager.addPass<TerminatorCleanupPass>();
+    passManager.addPass<CFGSimplificationPass>();
+    passManager.addPass<UnreachableBlockEliminationPass>();
+    passManager.addPass<PhiCleanupPass>();
+    passManager.addPass<ScalarLoadForwardingPass>();
+    passManager.addPass<MemoryValueOptimizationPass>();
+    passManager.addPass<GlobalPropagationPass>();
+    passManager.addPass<EntryConstantPoolingPass>();
+    passManager.addPass<InductionStrengthReductionPass>();
+    passManager.addPass<LoopInvariantCodeMotionPass>();
+    passManager.addPass<DeadStoreEliminationPass>();
+    passManager.addPass<DeadCodeEliminationPass>();
+    passManager.addPass<ScalarMemoryCleanupPass>();
+
+    auto optimizeFunction = [&](Function &function) {
+        propagateConstantGlobals(function, globVars);
+        cleanupAfterTerminators(function);
+        removeUnreachableBlocks(function);
+        eliminateTailRecursion(function);
+        while (canonicalizeLoops(function)) {
+        }
+        promoteMemoryToRegisters(function);
+        passManager.run(function);
+        std::string verificationFailure;
+        if (!verifySSA(function, &verificationFailure)) {
+            Error::raise("SSA verification failed in " + function.getName()
+                         + ": " + verificationFailure);
+        }
+        if (globalValueNumberingCodeMotion(function)) {
+            passManager.run(function);
+        }
+        for (int iteration = 0; iteration < 8
+                                && eliminatePartialRedundancy(function);
+             ++iteration) {
+            globalValueNumberingCodeMotion(function);
+            passManager.run(function);
+        }
+        if (!verifySSA(function, &verificationFailure)) {
+            Error::raise("SSA verification failed after PRE in " + function.getName()
+                         + ": " + verificationFailure);
+        }
+    };
+
+    if (mainFunction) {
+        optimizeFunction(*mainFunction);
+    }
+    for (auto &function: functions) {
+        optimizeFunction(*function);
+    }
+}
+
+void Module::lowerPhiNodes() {
+    if (mainFunction) {
+        IR::lowerPhiNodes(*mainFunction);
+    }
+    for (auto &function: functions) {
+        IR::lowerPhiNodes(*function);
     }
 }
 
@@ -1452,6 +1709,10 @@ const std::vector<std::pair<std::string, GlobVar>> &Module::getGlobVars() const 
 }
 
 const Function &Module::getMainFunction() const {
+    return *mainFunction;
+}
+
+Function &Module::getMutableMainFunction() {
     return *mainFunction;
 }
 
