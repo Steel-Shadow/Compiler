@@ -1485,6 +1485,17 @@ bool eliminateTailRecursion(Function &function) {
         return false;
     }
 
+    // This lowering writes new arguments through the formal parameter slots.
+    // Once mem2reg has introduced Parameter instructions, those slots no longer
+    // feed the function body and applying the lowering would drop the update.
+    for (const auto &block: function.getBasicBlocks()) {
+        if (std::any_of(block->instructions.begin(), block->instructions.end(), [](const Inst &inst) {
+                return inst.op == Op::Parameter;
+            })) {
+            return false;
+        }
+    }
+
     struct TailCall {
         size_t frameStart{};
         size_t call{};
@@ -1522,7 +1533,23 @@ bool eliminateTailRecursion(Function &function) {
 
             std::vector<size_t> pushes;
             bool unsupportedArgument = false;
+            size_t argumentFrameDepth = 0;
             for (size_t index = frameStart + 1; index < call; ++index) {
+                if (instructions[index].op == Op::InStack) {
+                    ++argumentFrameDepth;
+                    continue;
+                }
+                if (instructions[index].op == Op::OutStack) {
+                    if (argumentFrameDepth == 0) {
+                        unsupportedArgument = true;
+                        break;
+                    }
+                    --argumentFrameDepth;
+                    continue;
+                }
+                if (argumentFrameDepth != 0) {
+                    continue;
+                }
                 if (instructions[index].op == Op::PushAddressParam) {
                     unsupportedArgument = true;
                     break;
@@ -1531,7 +1558,8 @@ bool eliminateTailRecursion(Function &function) {
                     pushes.push_back(index);
                 }
             }
-            if (unsupportedArgument || pushes.size() != function.getParams().size()) {
+            if (unsupportedArgument || argumentFrameDepth != 0
+                || pushes.size() != function.getParams().size()) {
                 continue;
             }
 
