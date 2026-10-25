@@ -42,6 +42,8 @@ std::string toString(AST e) {
             return "BlockItem";
         case AST::Stmt:
             return "Stmt";
+        case AST::CaseStmt:
+            return "CaseStmt";
         case AST::ForStmt:
             return "ForStmt";
         case AST::Exp:

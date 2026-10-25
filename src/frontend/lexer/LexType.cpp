@@ -16,7 +16,7 @@ std::string toString(LexType type) {
         case LexType::INTCON:
             return "INTCON";
         case LexType::CHARCON:
-            return "CHRCON";
+            return "CHARCON";
         case LexType::STRCON:
             return "STRCON";
         case LexType::MAINTK:

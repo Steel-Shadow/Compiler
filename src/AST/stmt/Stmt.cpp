@@ -447,6 +447,7 @@ std::unique_ptr<CaseStmt> CaseStmt::parse() {
         n->stmts.push_back(Stmt::parse());
     }
 
+    output(AST::CaseStmt);
     return n;
 }
 

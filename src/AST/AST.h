@@ -25,6 +25,7 @@ enum class AST {
     Block,
     BlockItem,
     Stmt,
+    CaseStmt,
     ForStmt,
     Exp,
     Cond,

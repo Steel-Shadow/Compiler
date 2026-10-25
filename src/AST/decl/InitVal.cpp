@@ -48,11 +48,11 @@ std::unique_ptr<ArrayInitVal> ArrayInitVal::parse(bool cons) {
     singleLex(LexType::LBRACE);
 
     if (Lexer::curLexType != LexType::RBRACE) {
-        n->array.push_back(InitVal::parse(cons));
+        n->array.push_back(ExpInitVal::parse(cons));
 
         while (Lexer::curLexType == LexType::COMMA) {
             Lexer::next();
-            n->array.push_back(InitVal::parse(cons));
+            n->array.push_back(ExpInitVal::parse(cons));
         }
     }
 
@@ -73,14 +73,9 @@ std::vector<int> ArrayInitVal::evaluate() {
 
 std::vector<ExpInitVal *> ArrayInitVal::getFlatten() const {
     std::vector<ExpInitVal *> flatten;
+    flatten.reserve(array.size());
     for (auto &i: array) {
-        if (auto p1 = dynamic_cast<ExpInitVal *>(i.get())) {
-            flatten.push_back(p1);
-        } else {
-            auto p2 = dynamic_cast<ArrayInitVal *>(i.get());
-            std::vector<ExpInitVal *> subFlatten = p2->getFlatten();
-            flatten.insert(flatten.end(), subFlatten.begin(), subFlatten.end());
-        }
+        flatten.push_back(i.get());
     }
     return flatten;
 }

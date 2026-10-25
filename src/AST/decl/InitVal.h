@@ -11,8 +11,8 @@
 
 struct Exp;
 
-// ConstInitVal → ConstExp | '{' [ ConstInitVal { ',' ConstInitVal } ] '}'
-// InitVal → Exp | '{' [ InitVal { ',' InitVal } ] '}'
+// ConstInitVal → ConstExp | '{' [ ConstExp { ',' ConstExp } ] '}' | StringConst
+// InitVal → Exp | '{' [ Exp { ',' Exp } ] '}' | StringConst
 // Both InitVal & ConstInitVal. Distinguish with `bool cons`
 struct InitVal {
 protected:
@@ -35,7 +35,7 @@ struct ExpInitVal : public InitVal {
 };
 
 struct ArrayInitVal : public InitVal {
-    std::vector<std::unique_ptr<InitVal>> array;
+    std::vector<std::unique_ptr<ExpInitVal>> array;
 
     static std::unique_ptr<ArrayInitVal> parse(bool cons);
 

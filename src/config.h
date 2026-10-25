@@ -6,10 +6,10 @@
 #define COMPILER_CONFIG_H
 
 #define FILEOUT_ERROR
-// #define FILEOUT_LEXER
-// #define FILEOUT_PARSER
-#define FILEOUT_IR
-#define FILEOUT_MIPS
+#define FILEOUT_LEXER
+#define FILEOUT_PARSER
+// #define FILEOUT_IR
+// #define FILEOUT_MIPS
 
 
 #if defined(MY_DEBUG)
