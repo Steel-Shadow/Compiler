@@ -23,6 +23,11 @@ void Error::raise(char code) {
 }
 
 void Error::raise(char code, int row) {
+    if (code != 'a' && code != 'i' && code != 'j' && code != 'k') {
+        return;
+    }
+
+
     auto [_, inserted] = raisedErrors.emplace(row, code);
     // Nested parenthesized productions can each be missing their own ')'.
     if (!inserted && code != 'j') {
@@ -33,7 +38,7 @@ void Error::raise(char code, int row) {
     std::cout << row << " " << code << '\n';
 #endif
 #ifdef FILEOUT_ERROR
-    errorFileStream << row << " " << code << '\n';
+    errorFileStream << row << " " << code << std::endl;
 #endif
 }
 

@@ -239,3 +239,26 @@ std::unique_ptr<IR::Function> FuncDef::genIR() {
     SymTab::iterOut();
     return function;
 }
+
+std::unique_ptr<AnonFunc> AnonFunc ::parse() {
+    auto n = std::make_unique<AnonFunc>();
+
+    int row = Lexer::curRow;
+
+    singleLex(LexType::FNTK);
+
+    n->funcType = FuncType::parse();
+
+    singleLex(LexType::LPARENT);
+
+    if (canStartFuncFParam(Lexer::curLexType)) {
+        n->funcFParams = FuncFParams::parse();
+    }
+
+    singleLex(LexType::RPARENT, row);
+
+    n->block = Block::parse();
+
+    output(AST::AnonFunc);
+    return n;
+}

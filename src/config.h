@@ -13,8 +13,8 @@
 
 
 #if defined(MY_DEBUG)
-// #define STDOUT_LEXER
-// #define STDOUT_PARSER
+#define STDOUT_LEXER
+#define STDOUT_PARSER
 #define STDOUT_ERROR
 // #define STDOUT_IR
 // #define STDOUT_MIPS

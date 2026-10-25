@@ -61,7 +61,9 @@ enum class LexType {
     RBRACK,
     LBRACE,
     RBRACE,
-
+    
+    FNTK,
+    
     LEX_END,
 };
 

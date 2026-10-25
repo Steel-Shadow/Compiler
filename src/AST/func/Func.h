@@ -72,4 +72,15 @@ struct FuncRParams {
     static std::unique_ptr<FuncRParams> parse();
 };
 
+
+// AnonFunc → 'fn' FuncType '(' [FuncFParams] ')' Block
+struct AnonFunc {
+    std::unique_ptr<FuncType> funcType;
+    std::unique_ptr<FuncFParams> funcFParams;
+    std::unique_ptr<Block> block;
+
+    static std::unique_ptr<AnonFunc> parse();
+};
+
+
 #endif

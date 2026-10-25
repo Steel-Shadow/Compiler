@@ -9,6 +9,7 @@
 #include "tools/LinkedHashMap.h"
 
 #include <sstream>
+#include <iostream>
 #include <utility>
 
 std::ofstream Lexer::outFileStream;
@@ -98,8 +99,28 @@ Word Lexer::next() {
         while (isdigit(nextChar())) {
             token += c;
         }
-        // error: bad number
-        lexType = LexType::INTCON;
+
+        bool isExtenedCharCon = false;
+        bool hasError = false;
+        while (c == '_' || isalpha(c)) {
+            isExtenedCharCon = true;
+            if (c != 'c') {
+                hasError = true;
+            }
+            token += c;
+            nextChar();
+        }
+
+        if (hasError) {
+            Error::raise('a');
+        }
+
+        if (isExtenedCharCon) {
+            lexType = LexType::CHARCON;
+        } else {
+            // error: bad number
+            lexType = LexType::INTCON;
+        }
     } else if (c == '\'') {
         while (nextChar() != EOF) {
             token += c;
@@ -245,6 +266,7 @@ void buildReserveWords() {
     reserveWords.put("]", LexType::RBRACK);
     reserveWords.put("{", LexType::LBRACE);
     reserveWords.put("}", LexType::RBRACE);
+    reserveWords.put("fn", LexType::FNTK);
 }
 
 void output() {

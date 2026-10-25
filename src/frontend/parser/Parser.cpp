@@ -7,6 +7,7 @@
 #include "config.h"
 #include "errorHandler/Error.h"
 #include "frontend/lexer/Lexer.h"
+#include <iostream>
 
 void Parser::singleLex(LexType type) {
     singleLex(type, Lexer::curRow);
@@ -34,6 +35,6 @@ void Parser::output([[maybe_unused]] AST type) {
     std::cout << "<" << toString(type) << ">" << '\n';
 #endif
 #ifdef FILEOUT_PARSER
-    Lexer::outFileStream << "<" << toString(type) << ">" << '\n';
+    Lexer::outFileStream << "<" << toString(type) << ">" << std::endl;
 #endif
 }

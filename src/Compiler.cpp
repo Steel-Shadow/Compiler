@@ -29,13 +29,13 @@ bool compile(const CompileOptions &options) {
     Lexer::init(options.inputFile, options.lexerOutputFile);
 
     auto compUnit = CompUnit::parse();
-    if (!Error::hasError) {
-        auto module = compUnit->genIR();
-        module->optimize();
-        module->outputIR();
-        module->lowerPhiNodes();
-        MIPS::genMIPS(*module);
-    }
+    // if (!Error::hasError) {
+    //     auto module = compUnit->genIR();
+    //     module->optimize();
+    //     module->outputIR();
+    //     module->lowerPhiNodes();
+    //     MIPS::genMIPS(*module);
+    // }
     return !Error::hasError;
 }
 

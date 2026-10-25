@@ -103,6 +103,8 @@ std::string toString(LexType type) {
             return "LBRACE";
         case LexType::RBRACE:
             return "RBRACE";
+        case LexType::FNTK:
+            return "FNTK";
         default:
             // bad type
             Error::raise();

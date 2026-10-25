@@ -41,6 +41,9 @@ enum class AST {
     EqExp,
     LAndExp,
     LOrExp,
+
+    AnonFunc,
+    
 };
 
 // do not use it for <BlockItem>, <Decl>, <BType>

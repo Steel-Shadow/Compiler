@@ -16,6 +16,7 @@ class Symbol;
 class FuncSymbol;
 struct FuncRParams;
 struct Exp;
+struct AnonFunc;
 
 enum class BinaryOp {
     Add,
@@ -126,6 +127,17 @@ struct FuncCall : public BaseUnaryExp {
 
     std::unique_ptr<IR::Temp> genIR(IR::BasicBlocks &bBlocks) override;
 
+    Type getType() override;
+};
+
+// AnonFunc '(' [FuncRParams] ')'
+struct AnonFuncCall: public BaseUnaryExp{
+    std::unique_ptr<AnonFunc> anonFunc;
+    std::unique_ptr<FuncRParams> funcRParams;
+
+    static std::unique_ptr<AnonFuncCall> parse();
+
+    std::unique_ptr<IR::Temp> genIR(IR::BasicBlocks &bBlocks) override;
     Type getType() override;
 };
 

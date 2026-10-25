@@ -74,6 +74,8 @@ std::string toString(AST e) {
             return "LAndExp";
         case AST::LOrExp:
             return "LOrExp";
+        case AST::AnonFunc:
+            return "AnonFunc";
         default:
             return "unknown";
     }

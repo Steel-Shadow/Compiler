@@ -411,7 +411,12 @@ std::unique_ptr<UnaryExp> UnaryExp::parse() {
 
                 output(AST::UnaryExp);
                 break;
-
+            case LexType::FNTK:
+                // AnonFunc '(' [FuncRParams] ')' // j
+                n->baseUnaryExp = AnonFuncCall::parse();
+                getBaseUnaryExp = true;
+                output(AST::UnaryExp);
+                break;
             default:
                 Error::raise();
                 n->baseUnaryExp = std::make_unique<Number>();
@@ -536,6 +541,32 @@ std::unique_ptr<FuncCall> FuncCall::parse() {
 
     singleLex(LexType::RPARENT, row);
     return n;
+}
+
+// AnonFunc '(' [FuncRParams] ')' // j
+std::unique_ptr<AnonFuncCall> AnonFuncCall::parse() {
+    auto n = std::make_unique<AnonFuncCall>();
+
+    int row = Lexer::curRow;
+    n->anonFunc = AnonFunc::parse();
+
+    singleLex(LexType::LPARENT);
+
+    if (canStartExp(Lexer::curLexType)) {
+        n->funcRParams = FuncRParams::parse();
+    }
+
+    singleLex(LexType::RPARENT, row);
+    return n;
+}
+
+
+std::unique_ptr<IR::Temp> AnonFuncCall::genIR(IR::BasicBlocks &bBlocks) {
+    return nullptr;
+}
+
+Type AnonFuncCall::getType() {
+    return this->anonFunc->funcType->getType();
 }
 
 void FuncCall::checkParams(const std::unique_ptr<FuncCall> &n, int row, const FuncSymbol *funcSym) {
